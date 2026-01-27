@@ -16,6 +16,7 @@ if __name__=='__main__':
   parser = argparse.ArgumentParser()
   code_dir = os.path.dirname(os.path.realpath(__file__))
   parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/mustard0/mesh/textured_simple.obj')
+  parser.add_argument('--mesh_scale', type=float, default=1.0, help='Scale factor for mesh (e.g., 0.01 for cm to m)')
   parser.add_argument('--test_scene_dir', type=str, default=f'{code_dir}/demo_data/mustard0')
   parser.add_argument('--est_refine_iter', type=int, default=5)
   parser.add_argument('--track_refine_iter', type=int, default=2)
@@ -27,12 +28,19 @@ if __name__=='__main__':
   set_seed(0)
 
   mesh = trimesh.load(args.mesh_file)
+  if isinstance(mesh, trimesh.Scene):
+    mesh = mesh.dump(concatenate=True)
+  if args.mesh_scale != 1.0:
+    mesh.apply_scale(args.mesh_scale)
+    logging.info(f"Mesh scaled by {args.mesh_scale} (new extents: {mesh.extents})")
 
   debug = args.debug
   debug_dir = args.debug_dir
   os.system(f'rm -rf {debug_dir}/* && mkdir -p {debug_dir}/track_vis {debug_dir}/ob_in_cam')
 
-  to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
+  # Use axis-aligned bounding box instead of oriented_bounds
+  # oriented_bounds rotates the box which doesn't match our defined coordinate system
+  extents = mesh.extents  # axis-aligned extents
   bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2,3)
 
   scorer = ScorePredictor()
@@ -62,13 +70,48 @@ if __name__=='__main__':
     else:
       pose = est.track_one(rgb=color, depth=depth, K=reader.K, iteration=args.track_refine_iter)
 
+    # No coordinate transformation - use raw pose
+    # (Different GT may use different conventions)
+    pose_gt = pose.copy()
+
     os.makedirs(f'{debug_dir}/ob_in_cam', exist_ok=True)
-    np.savetxt(f'{debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4,4))
+    np.savetxt(f'{debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose_gt.reshape(4,4))
+
+    # Save as cam_in_ob (inverse of ob_in_cam) for comparison with ground truth
+    os.makedirs(f'{debug_dir}/cam_in_ob', exist_ok=True)
+    cam_in_ob = np.linalg.inv(pose_gt)
+    np.savetxt(f'{debug_dir}/cam_in_ob/{reader.id_strs[i]}.txt', cam_in_ob.reshape(4,4))
 
     if debug>=1:
-      center_pose = pose@np.linalg.inv(to_origin)
-      vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=center_pose, bbox=bbox)
-      vis = draw_xyz_axis(color, ob_in_cam=center_pose, scale=0.1, K=reader.K, thickness=3, transparency=0, is_input_rgb=True)
+      # Use pose directly since we're using axis-aligned bbox (no to_origin transform)
+      vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=pose, bbox=bbox)
+      # Use axis scale proportional to object size (reduced for better visibility)
+      axis_scale = max(extents) * 1  # 1x the largest dimension
+      # Flip Y and Z axes for visualization (Rx_180)
+      Rx_180_vis = np.array([[1,0,0,0],[0,-1,0,0],[0,0,-1,0],[0,0,0,1]], dtype=np.float64)
+      pose_vis = pose @ Rx_180_vis
+      vis = draw_xyz_axis(vis, ob_in_cam=pose_vis, scale=axis_scale, K=reader.K, thickness=3, transparency=0, is_input_rgb=True)
+
+      # Display 6DoF on top-left corner
+      from scipy.spatial.transform import Rotation as R
+      trans = pose_gt[:3, 3]
+      rot_euler = R.from_matrix(pose_gt[:3, :3]).as_euler('xyz', degrees=True)
+
+      # Convert to BGR for cv2.putText
+      vis_bgr = cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
+      font = cv2.FONT_HERSHEY_SIMPLEX
+      font_scale = 0.6
+      color_text = (0, 255, 0)  # Green
+      thickness_text = 2
+
+      cv2.putText(vis_bgr, f'X: {trans[0]*100:+6.2f} cm', (10, 25), font, font_scale, color_text, thickness_text)
+      cv2.putText(vis_bgr, f'Y: {trans[1]*100:+6.2f} cm', (10, 50), font, font_scale, color_text, thickness_text)
+      cv2.putText(vis_bgr, f'Z: {trans[2]*100:+6.2f} cm', (10, 75), font, font_scale, color_text, thickness_text)
+      cv2.putText(vis_bgr, f'Roll:  {rot_euler[0]:+7.2f} deg', (10, 105), font, font_scale, color_text, thickness_text)
+      cv2.putText(vis_bgr, f'Pitch: {rot_euler[1]:+7.2f} deg', (10, 130), font, font_scale, color_text, thickness_text)
+      cv2.putText(vis_bgr, f'Yaw:   {rot_euler[2]:+7.2f} deg', (10, 155), font, font_scale, color_text, thickness_text)
+
+      vis = cv2.cvtColor(vis_bgr, cv2.COLOR_BGR2RGB)
       #cv2.imshow('1', vis[...,::-1])
       #cv2.waitKey(1)
 
