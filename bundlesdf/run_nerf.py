@@ -102,6 +102,21 @@ def run_linemod():
     logging.info(f"saved to {out_file}")
 
 
+def run_vcb():
+  ob_ids = [1] # Assuming object ID 1 based on the folder structure vcb/ref_views/ob_000001/
+  code_dir = os.path.dirname(os.path.realpath(__file__))
+  with open(f'{code_dir}/config_ycbv.yml','r') as ff: # Using ycbv config as a starting point
+    cfg = yaml.safe_load(ff)
+
+  for ob_id in ob_ids:
+    base_dir = f'{args.ref_view_dir}/ob_{ob_id:06d}'
+    mesh = run_one_ob(base_dir=base_dir, cfg=cfg)
+    out_file = f'{base_dir}/model/model.obj'
+    os.makedirs(os.path.dirname(out_file), exist_ok=True)
+    mesh.export(out_file)
+    logging.info(f"saved to {out_file}")
+
+
 if __name__=="__main__":
   parser = argparse.ArgumentParser()
   code_dir = os.path.dirname(os.path.realpath(__file__))
@@ -111,5 +126,7 @@ if __name__=="__main__":
 
   if args.dataset=='ycbv':
     run_ycbv()
+  elif args.dataset=='vcb': # Added vcb dataset option
+    run_vcb()
   else:
     run_linemod()
