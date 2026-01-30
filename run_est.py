@@ -24,6 +24,22 @@ Usage:
     # Process every 10th frame
     python run_est.py --mask_model model.pt --frame_step 10
 
+    # With symmetry handling (Z-axis continuous rotation)
+    python run_est.py --mask_model model.pt --symmetry z
+
+    # With symmetry handling (Z-axis 180-degree)
+    python run_est.py --mask_model model.pt --symmetry z180
+
+    # For wall-mounted objects (fix Z-axis direction)
+    python run_est.py --mask_model model.pt --symmetry z180 --fix_z_axis
+
+Symmetry options:
+    - none: No symmetry (default)
+    - z, x, y: Continuous rotation symmetry around axis (5-degree steps)
+    - z180, x180, y180: 180-degree discrete symmetry around axis
+    - xy, xz, yz: Combined 180-degree symmetry on two axes
+    - xyz: Full 180-degree symmetry on all axes
+
 Output:
     - debug/ob_in_cam/*.txt: Object-to-camera transformation matrices
     - debug/cam_in_ob/*.txt: Camera-to-object transformation matrices
@@ -59,8 +75,201 @@ except ImportError:
 
 
 # =============================================================================
+# Symmetry Utilities
+# =============================================================================
+
+def create_symmetry_tfs(symmetry: str, angle_step: float = 5.0) -> np.ndarray:
+    """
+    Create symmetry transformation matrices.
+
+    Args:
+        symmetry: Symmetry type string. Options:
+            - 'none': No symmetry (identity only)
+            - 'z': Z-axis continuous symmetry (rotation around Z)
+            - 'z180': Z-axis 180-degree discrete symmetry
+            - 'x': X-axis continuous symmetry
+            - 'x180': X-axis 180-degree discrete symmetry
+            - 'y': Y-axis continuous symmetry
+            - 'y180': Y-axis 180-degree discrete symmetry
+            - 'xy': Both X and Y axis 180-degree symmetry
+            - 'xyz': All axes 180-degree symmetry
+        angle_step: Angle step in degrees for continuous symmetry
+
+    Returns:
+        Array of 4x4 transformation matrices (N, 4, 4)
+    """
+    tfs = [np.eye(4)]
+
+    if symmetry == 'none' or symmetry is None:
+        return np.array(tfs)
+
+    def rot_x(angle_deg):
+        a = np.radians(angle_deg)
+        return np.array([
+            [1, 0, 0, 0],
+            [0, np.cos(a), -np.sin(a), 0],
+            [0, np.sin(a), np.cos(a), 0],
+            [0, 0, 0, 1]
+        ])
+
+    def rot_y(angle_deg):
+        a = np.radians(angle_deg)
+        return np.array([
+            [np.cos(a), 0, np.sin(a), 0],
+            [0, 1, 0, 0],
+            [-np.sin(a), 0, np.cos(a), 0],
+            [0, 0, 0, 1]
+        ])
+
+    def rot_z(angle_deg):
+        a = np.radians(angle_deg)
+        return np.array([
+            [np.cos(a), -np.sin(a), 0, 0],
+            [np.sin(a), np.cos(a), 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ])
+
+    symmetry = symmetry.lower()
+
+    # Continuous symmetry (full rotation)
+    if symmetry == 'z':
+        for angle in np.arange(angle_step, 360, angle_step):
+            tfs.append(rot_z(angle))
+    elif symmetry == 'x':
+        for angle in np.arange(angle_step, 360, angle_step):
+            tfs.append(rot_x(angle))
+    elif symmetry == 'y':
+        for angle in np.arange(angle_step, 360, angle_step):
+            tfs.append(rot_y(angle))
+
+    # 180-degree discrete symmetry
+    elif symmetry == 'z180':
+        tfs.append(rot_z(180))
+    elif symmetry == 'x180':
+        tfs.append(rot_x(180))
+    elif symmetry == 'y180':
+        tfs.append(rot_y(180))
+
+    # Combined symmetries
+    elif symmetry == 'xy':
+        tfs.append(rot_x(180))
+        tfs.append(rot_y(180))
+        tfs.append(rot_x(180) @ rot_y(180))
+    elif symmetry == 'xz':
+        tfs.append(rot_x(180))
+        tfs.append(rot_z(180))
+        tfs.append(rot_x(180) @ rot_z(180))
+    elif symmetry == 'yz':
+        tfs.append(rot_y(180))
+        tfs.append(rot_z(180))
+        tfs.append(rot_y(180) @ rot_z(180))
+    elif symmetry == 'xyz':
+        tfs.append(rot_x(180))
+        tfs.append(rot_y(180))
+        tfs.append(rot_z(180))
+        tfs.append(rot_x(180) @ rot_y(180))
+        tfs.append(rot_x(180) @ rot_z(180))
+        tfs.append(rot_y(180) @ rot_z(180))
+        tfs.append(rot_x(180) @ rot_y(180) @ rot_z(180))
+
+    else:
+        logging.warning(f"Unknown symmetry type: {symmetry}, using 'none'")
+
+    return np.array(tfs)
+
+
+# =============================================================================
 # Pose Utilities
 # =============================================================================
+
+def fix_z_axis_direction(pose: np.ndarray) -> np.ndarray:
+    """
+    Ensure Z-axis points towards camera (positive Z in camera frame).
+
+    For objects mounted on a wall/panel, the Z-axis should always point
+    outward (towards the camera). If Z-axis points away, flip by 180 degrees
+    around X-axis.
+
+    Args:
+        pose: 4x4 transformation matrix (object in camera frame)
+
+    Returns:
+        Corrected 4x4 transformation matrix
+    """
+    # Z-axis of object in camera frame
+    z_axis = pose[:3, 2]
+
+    # Camera looks towards +Z, so object's Z should point towards camera (negative Z component)
+    # Actually, if object's Z-axis has positive Z component in camera frame,
+    # it means Z points away from camera
+    if z_axis[2] > 0:
+        # Flip 180 degrees around X-axis
+        flip_x = np.array([
+            [1, 0, 0, 0],
+            [0, -1, 0, 0],
+            [0, 0, -1, 0],
+            [0, 0, 0, 1]
+        ], dtype=np.float64)
+        pose = pose @ flip_x
+
+    return pose
+
+
+def fix_pitch_yaw_sign(pose: np.ndarray) -> np.ndarray:
+    """
+    Fix pitch/yaw sign ambiguity for quasi-symmetric objects.
+
+    For objects that are almost symmetric but not quite, the pose estimator
+    may flip between equivalent-looking poses. This function enforces a
+    consistent sign convention:
+    - If pitch and yaw have the same sign: both become positive
+    - If pitch and yaw have different signs: pitch positive, yaw negative
+
+    Args:
+        pose: 4x4 transformation matrix
+
+    Returns:
+        Corrected 4x4 transformation matrix
+    """
+    # Extract current euler angles
+    R = pose[:3, :3]
+    sy = np.sqrt(R[0, 0]**2 + R[1, 0]**2)
+    singular = sy < 1e-6
+
+    if not singular:
+        pitch = np.arctan2(R[2, 1], R[2, 2])
+        yaw = np.arctan2(-R[2, 0], sy)
+        roll = np.arctan2(R[1, 0], R[0, 0])
+    else:
+        pitch = np.arctan2(-R[1, 2], R[1, 1])
+        yaw = np.arctan2(-R[2, 0], sy)
+        roll = 0
+
+    # Check if we need to flip (180 degree rotation around Z)
+    need_flip = False
+
+    if np.sign(pitch) == np.sign(yaw):
+        # Same sign: both should be positive
+        if pitch < 0:
+            need_flip = True
+    else:
+        # Different sign: pitch positive, yaw negative
+        if pitch < 0:
+            need_flip = True
+
+    if need_flip:
+        # Flip 180 degrees around Z-axis
+        flip_z = np.array([
+            [-1, 0, 0, 0],
+            [0, -1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ], dtype=np.float64)
+        pose = pose @ flip_z
+
+    return pose
+
 
 def rotation_matrix_to_euler(R: np.ndarray) -> Tuple[float, float, float]:
     """
@@ -262,6 +471,23 @@ def parse_args() -> argparse.Namespace:
         '--use_tracking', action='store_true',
         help='Use tracking after first frame (faster but less robust)'
     )
+    pose_group.add_argument(
+        '--symmetry', type=str, default='none',
+        choices=['none', 'z', 'z180', 'x', 'x180', 'y', 'y180', 'xy', 'xz', 'yz', 'xyz'],
+        help='Object symmetry type for pose clustering'
+    )
+    pose_group.add_argument(
+        '--symmetry_step', type=float, default=5.0,
+        help='Angle step (degrees) for continuous symmetry (z, x, y)'
+    )
+    pose_group.add_argument(
+        '--fix_z_axis', action='store_true',
+        help='Force Z-axis to point towards camera (for wall-mounted objects)'
+    )
+    pose_group.add_argument(
+        '--fix_pitch_yaw', action='store_true',
+        help='Fix pitch/yaw sign ambiguity (same sign -> both positive, diff sign -> pitch+/yaw-)'
+    )
 
     # Mask generation arguments
     mask_group = parser.add_argument_group('Mask Generation')
@@ -337,6 +563,12 @@ def main():
             os.remove(os.path.join(subdir_path, f))
 
     # -------------------------------------------------------------------------
+    # Create symmetry transformations
+    # -------------------------------------------------------------------------
+    symmetry_tfs = create_symmetry_tfs(args.symmetry, args.symmetry_step)
+    logging.info(f"Symmetry: {args.symmetry} ({len(symmetry_tfs)} transformations)")
+
+    # -------------------------------------------------------------------------
     # Initialize FoundationPose
     # -------------------------------------------------------------------------
     scorer = ScorePredictor()
@@ -346,6 +578,7 @@ def main():
     est = FoundationPose(
         model_pts=mesh.vertices,
         model_normals=mesh.vertex_normals,
+        symmetry_tfs=symmetry_tfs,
         mesh=mesh,
         scorer=scorer,
         refiner=refiner,
@@ -443,6 +676,14 @@ def main():
                 K=reader.K,
                 iteration=args.track_refine_iter
             )
+
+        # Fix Z-axis direction for wall-mounted objects
+        if args.fix_z_axis:
+            pose = fix_z_axis_direction(pose)
+
+        # Fix pitch/yaw sign ambiguity
+        if args.fix_pitch_yaw:
+            pose = fix_pitch_yaw_sign(pose)
 
         # Save pose matrices
         pose_save = convert_pose_for_saving(pose)
