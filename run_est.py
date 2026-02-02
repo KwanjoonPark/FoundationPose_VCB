@@ -9,101 +9,151 @@
 """
 6DoF pose estimation using FoundationPose with YOLO or Mask R-CNN segmentation.
 
-This script runs FoundationPose on a sequence of RGB-D frames, using a learned
-segmentation model (YOLO or Mask R-CNN) for object detection.
-
 Usage:
-    # YOLO segmentation
-    python run_est.py --mesh_file model.obj --test_scene_dir ./scene \\
+    python run_est.py --mesh_file model.obj --test_scene_dir ./scene \
         --mask_model yolo_seg.pt --mask_type yolo
 
-    # Mask R-CNN segmentation
-    python run_est.py --mesh_file model.obj --test_scene_dir ./scene \\
-        --mask_model model.pth --mask_type maskrcnn
-
-    # Process every 10th frame
-    python run_est.py --mask_model model.pt --frame_step 10
-
-    # With symmetry handling (Z-axis continuous rotation)
-    python run_est.py --mask_model model.pt --symmetry z
-
-    # With symmetry handling (Z-axis 180-degree)
-    python run_est.py --mask_model model.pt --symmetry z180
-
-    # For wall-mounted objects (fix Z-axis direction)
     python run_est.py --mask_model model.pt --symmetry z180 --fix_z_axis
-
-Symmetry options:
-    - none: No symmetry (default)
-    - z, x, y: Continuous rotation symmetry around axis (5-degree steps)
-    - z180, x180, y180: 180-degree discrete symmetry around axis
-    - xy, xz, yz: Combined 180-degree symmetry on two axes
-    - xyz: Full 180-degree symmetry on all axes
-
-Output:
-    - debug/ob_in_cam/*.txt: Object-to-camera transformation matrices
-    - debug/cam_in_ob/*.txt: Camera-to-object transformation matrices
-    - debug/track_vis/*.png: Visualization images (if debug >= 2)
 """
+
+from __future__ import annotations
 
 import argparse
 import logging
 import os
-from typing import Tuple
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, Tuple, List
 
 import cv2
 import imageio
 import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
-from estimater import (
-    FoundationPose, ScorePredictor, PoseRefinePredictor,
-    draw_posed_3d_box, draw_xyz_axis,
-    set_logging_format, set_seed
-)
-from datareader import YcbineoatReader
-from mask_generator import create_mask_generator
 
-# Optional imports (used in debug mode)
-try:
-    import trimesh
-    import open3d as o3d
-    import nvdiffrast.torch as dr
-    from estimater import depth2xyzmap, toOpen3dCloud
-except ImportError:
-    pass
+# =============================================================================
+# Configuration
+# =============================================================================
+
+@dataclass
+class MeshConfig:
+    """Mesh 관련 설정."""
+    file_path: str
+    scale: float = 0.01
+
+
+@dataclass
+class SceneConfig:
+    """Scene 관련 설정."""
+    directory: str
+    frame_start: int = 0
+    frame_end: int = -1
+    frame_step: int = 1
+
+
+@dataclass
+class PoseConfig:
+    """Pose 추정 관련 설정."""
+    est_refine_iter: int = 5
+    track_refine_iter: int = 2
+    use_tracking: bool = False
+    symmetry: str = 'none'
+    symmetry_step: float = 5.0
+    fix_z_axis: bool = False
+    fix_pitch_yaw: bool = False
+
+
+@dataclass
+class MaskConfig:
+    """Mask 생성 관련 설정."""
+    model_path: str
+    model_type: str = 'yolo'
+    confidence: float = 0.5
+    config_file: Optional[str] = None
+
+
+@dataclass
+class DebugConfig:
+    """디버그 관련 설정."""
+    level: int = 2
+    directory: str = './debug'
+
+
+@dataclass
+class EstimationConfig:
+    """전체 설정을 통합하는 최상위 설정 클래스."""
+    mesh: MeshConfig
+    scene: SceneConfig
+    pose: PoseConfig
+    mask: MaskConfig
+    debug: DebugConfig
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> EstimationConfig:
+        """argparse Namespace로부터 설정 객체 생성."""
+        return cls(
+            mesh=MeshConfig(file_path=args.mesh_file, scale=args.mesh_scale),
+            scene=SceneConfig(
+                directory=args.test_scene_dir,
+                frame_start=args.frame_start,
+                frame_end=args.frame_end,
+                frame_step=args.frame_step,
+            ),
+            pose=PoseConfig(
+                est_refine_iter=args.est_refine_iter,
+                track_refine_iter=args.track_refine_iter,
+                use_tracking=args.use_tracking,
+                symmetry=args.symmetry,
+                symmetry_step=args.symmetry_step,
+                fix_z_axis=args.fix_z_axis,
+                fix_pitch_yaw=args.fix_pitch_yaw,
+            ),
+            mask=MaskConfig(
+                model_path=args.mask_model,
+                model_type=args.mask_type,
+                confidence=args.mask_conf,
+                config_file=args.mask_config,
+            ),
+            debug=DebugConfig(level=args.debug, directory=args.debug_dir),
+        )
 
 
 # =============================================================================
-# Symmetry Utilities
+# Rotation Utilities
 # =============================================================================
 
-def create_symmetry_tfs(symmetry: str, angle_step: float = 5.0) -> np.ndarray:
-    """
-    Create symmetry transformation matrices.
+class RotationUtils:
+    """회전 관련 유틸리티 함수 모음."""
 
-    Args:
-        symmetry: Symmetry type string. Options:
-            - 'none': No symmetry (identity only)
-            - 'z': Z-axis continuous symmetry (rotation around Z)
-            - 'z180': Z-axis 180-degree discrete symmetry
-            - 'x': X-axis continuous symmetry
-            - 'x180': X-axis 180-degree discrete symmetry
-            - 'y': Y-axis continuous symmetry
-            - 'y180': Y-axis 180-degree discrete symmetry
-            - 'xy': Both X and Y axis 180-degree symmetry
-            - 'xyz': All axes 180-degree symmetry
-        angle_step: Angle step in degrees for continuous symmetry
+    @staticmethod
+    def to_euler(R: np.ndarray) -> Tuple[float, float, float]:
+        """3x3 회전 행렬을 오일러 각도(pitch, yaw, roll)로 변환."""
+        sy = np.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
+        singular = sy < 1e-6
 
-    Returns:
-        Array of 4x4 transformation matrices (N, 4, 4)
-    """
-    tfs = [np.eye(4)]
+        if not singular:
+            pitch = np.degrees(np.arctan2(R[2, 1], R[2, 2]))
+            yaw = np.degrees(np.arctan2(-R[2, 0], sy))
+            roll = np.degrees(np.arctan2(R[1, 0], R[0, 0]))
+        else:
+            pitch = np.degrees(np.arctan2(-R[1, 2], R[1, 1]))
+            yaw = np.degrees(np.arctan2(-R[2, 0], sy))
+            roll = 0.0
 
-    if symmetry == 'none' or symmetry is None:
-        return np.array(tfs)
+        return pitch, yaw, roll
 
-    def rot_x(angle_deg):
+    @staticmethod
+    def normalize_angle(angle: float) -> float:
+        """각도를 [-90, 90] 범위로 정규화."""
+        if angle > 90:
+            return angle - 180
+        elif angle < -90:
+            return angle + 180
+        return angle
+
+    @staticmethod
+    def rot_x(angle_deg: float) -> np.ndarray:
+        """X축 회전 행렬 생성."""
         a = np.radians(angle_deg)
         return np.array([
             [1, 0, 0, 0],
@@ -112,7 +162,9 @@ def create_symmetry_tfs(symmetry: str, angle_step: float = 5.0) -> np.ndarray:
             [0, 0, 0, 1]
         ])
 
-    def rot_y(angle_deg):
+    @staticmethod
+    def rot_y(angle_deg: float) -> np.ndarray:
+        """Y축 회전 행렬 생성."""
         a = np.radians(angle_deg)
         return np.array([
             [np.cos(a), 0, np.sin(a), 0],
@@ -121,7 +173,9 @@ def create_symmetry_tfs(symmetry: str, angle_step: float = 5.0) -> np.ndarray:
             [0, 0, 0, 1]
         ])
 
-    def rot_z(angle_deg):
+    @staticmethod
+    def rot_z(angle_deg: float) -> np.ndarray:
+        """Z축 회전 행렬 생성."""
         a = np.radians(angle_deg)
         return np.array([
             [np.cos(a), -np.sin(a), 0, 0],
@@ -130,286 +184,456 @@ def create_symmetry_tfs(symmetry: str, angle_step: float = 5.0) -> np.ndarray:
             [0, 0, 0, 1]
         ])
 
-    symmetry = symmetry.lower()
 
-    # Continuous symmetry (full rotation)
-    if symmetry == 'z':
-        for angle in np.arange(angle_step, 360, angle_step):
-            tfs.append(rot_z(angle))
-    elif symmetry == 'x':
-        for angle in np.arange(angle_step, 360, angle_step):
-            tfs.append(rot_x(angle))
-    elif symmetry == 'y':
-        for angle in np.arange(angle_step, 360, angle_step):
-            tfs.append(rot_y(angle))
+# =============================================================================
+# Symmetry Utilities
+# =============================================================================
 
-    # 180-degree discrete symmetry
-    elif symmetry == 'z180':
-        tfs.append(rot_z(180))
-    elif symmetry == 'x180':
-        tfs.append(rot_x(180))
-    elif symmetry == 'y180':
-        tfs.append(rot_y(180))
+class SymmetryGenerator:
+    """대칭 변환 행렬 생성기."""
 
-    # Combined symmetries
-    elif symmetry == 'xy':
-        tfs.append(rot_x(180))
-        tfs.append(rot_y(180))
-        tfs.append(rot_x(180) @ rot_y(180))
-    elif symmetry == 'xz':
-        tfs.append(rot_x(180))
-        tfs.append(rot_z(180))
-        tfs.append(rot_x(180) @ rot_z(180))
-    elif symmetry == 'yz':
-        tfs.append(rot_y(180))
-        tfs.append(rot_z(180))
-        tfs.append(rot_y(180) @ rot_z(180))
-    elif symmetry == 'xyz':
-        tfs.append(rot_x(180))
-        tfs.append(rot_y(180))
-        tfs.append(rot_z(180))
-        tfs.append(rot_x(180) @ rot_y(180))
-        tfs.append(rot_x(180) @ rot_z(180))
-        tfs.append(rot_y(180) @ rot_z(180))
-        tfs.append(rot_x(180) @ rot_y(180) @ rot_z(180))
+    AXIS_ROTATIONS = {
+        'x': RotationUtils.rot_x,
+        'y': RotationUtils.rot_y,
+        'z': RotationUtils.rot_z,
+    }
 
-    else:
-        logging.warning(f"Unknown symmetry type: {symmetry}, using 'none'")
+    @classmethod
+    def create(cls, symmetry: str, angle_step: float = 5.0) -> np.ndarray:
+        """
+        대칭 변환 행렬 배열 생성.
 
-    return np.array(tfs)
+        Args:
+            symmetry: 대칭 타입 ('none', 'z', 'z180', 'xy', 'xyz' 등)
+            angle_step: 연속 대칭 시 각도 단계 (도)
+
+        Returns:
+            (N, 4, 4) 변환 행렬 배열
+        """
+        if symmetry is None or symmetry == 'none':
+            return np.array([np.eye(4)])
+
+        symmetry = symmetry.lower()
+        tfs = [np.eye(4)]
+
+        # 단일 축 연속 대칭
+        if symmetry in cls.AXIS_ROTATIONS:
+            rot_fn = cls.AXIS_ROTATIONS[symmetry]
+            for angle in np.arange(angle_step, 360, angle_step):
+                tfs.append(rot_fn(angle))
+
+        # 단일 축 180도 대칭
+        elif symmetry.endswith('180') and symmetry[:-3] in cls.AXIS_ROTATIONS:
+            axis = symmetry[:-3]
+            tfs.append(cls.AXIS_ROTATIONS[axis](180))
+
+        # 복합 대칭
+        elif symmetry in ('xy', 'xz', 'yz', 'xyz'):
+            tfs.extend(cls._create_combined_symmetry(symmetry))
+
+        else:
+            logging.warning(f"알 수 없는 대칭 타입: {symmetry}, 'none' 사용")
+
+        return np.array(tfs)
+
+    @classmethod
+    def _create_combined_symmetry(cls, symmetry: str) -> List[np.ndarray]:
+        """복합 대칭 변환 생성."""
+        rx = RotationUtils.rot_x(180)
+        ry = RotationUtils.rot_y(180)
+        rz = RotationUtils.rot_z(180)
+
+        transforms = {
+            'xy': [rx, ry, rx @ ry],
+            'xz': [rx, rz, rx @ rz],
+            'yz': [ry, rz, ry @ rz],
+            'xyz': [rx, ry, rz, rx @ ry, rx @ rz, ry @ rz, rx @ ry @ rz],
+        }
+        return transforms.get(symmetry, [])
 
 
 # =============================================================================
-# Pose Utilities
+# Pose Correction
 # =============================================================================
 
-def fix_z_axis_direction(pose: np.ndarray) -> np.ndarray:
-    """
-    Ensure Z-axis points towards camera (positive Z in camera frame).
+class PoseCorrector:
+    """Pose 보정 유틸리티."""
 
-    For objects mounted on a wall/panel, the Z-axis should always point
-    outward (towards the camera). If Z-axis points away, flip by 180 degrees
-    around X-axis.
+    # 180도 X축 플립 행렬 (상수)
+    FLIP_X = np.array([
+        [1, 0, 0, 0],
+        [0, -1, 0, 0],
+        [0, 0, -1, 0],
+        [0, 0, 0, 1]
+    ], dtype=np.float64)
 
-    Args:
-        pose: 4x4 transformation matrix (object in camera frame)
+    # 180도 Z축 플립 행렬 (상수)
+    FLIP_Z = np.array([
+        [-1, 0, 0, 0],
+        [0, -1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ], dtype=np.float64)
 
-    Returns:
-        Corrected 4x4 transformation matrix
-    """
-    # Z-axis of object in camera frame
-    z_axis = pose[:3, 2]
+    @classmethod
+    def fix_z_axis_direction(cls, pose: np.ndarray) -> np.ndarray:
+        """
+        Z축이 카메라 방향을 향하도록 보정.
 
-    # Camera looks towards +Z, so object's Z should point towards camera (negative Z component)
-    # Actually, if object's Z-axis has positive Z component in camera frame,
-    # it means Z points away from camera
-    if z_axis[2] > 0:
-        # Flip 180 degrees around X-axis
-        flip_x = np.array([
-            [1, 0, 0, 0],
-            [0, -1, 0, 0],
-            [0, 0, -1, 0],
-            [0, 0, 0, 1]
-        ], dtype=np.float64)
-        pose = pose @ flip_x
+        벽면에 장착된 물체의 경우 Z축이 항상 카메라 쪽을 향해야 함.
+        """
+        z_axis = pose[:3, 2]
+        if z_axis[2] > 0:  # Z축이 카메라 반대 방향
+            pose = pose @ cls.FLIP_X
+        return pose
 
-    return pose
+    @classmethod
+    def fix_pitch_yaw_sign(cls, pose: np.ndarray) -> np.ndarray:
+        """
+        pitch/yaw 부호 모호성 보정.
 
+        준대칭 객체의 경우 일관된 부호 규칙 적용.
+        pitch를 양수(+)로 통일.
+        """
+        pitch, _, _ = RotationUtils.to_euler(pose[:3, :3])
+        if pitch < 0:  # 음수면 플립하여 양수로 통일
+            pose = pose @ cls.FLIP_Z
+        return pose
 
-def fix_pitch_yaw_sign(pose: np.ndarray) -> np.ndarray:
-    """
-    Fix pitch/yaw sign ambiguity for quasi-symmetric objects.
+    @classmethod
+    def convert_for_saving(cls, pose: np.ndarray) -> np.ndarray:
+        """저장용으로 오일러 각도 정규화."""
+        pitch, yaw, roll = RotationUtils.to_euler(pose[:3, :3])
 
-    For objects that are almost symmetric but not quite, the pose estimator
-    may flip between equivalent-looking poses. This function enforces a
-    consistent sign convention:
-    - If pitch and yaw have the same sign: both become positive
-    - If pitch and yaw have different signs: pitch positive, yaw negative
+        pitch_save = RotationUtils.normalize_angle(-pitch)
+        yaw_save = RotationUtils.normalize_angle(-yaw)
+        roll_save = RotationUtils.normalize_angle(roll)
 
-    Args:
-        pose: 4x4 transformation matrix
+        rot_corrected = Rot.from_euler('xyz', [pitch_save, yaw_save, roll_save], degrees=True)
+        pose_save = pose.copy()
+        pose_save[:3, :3] = rot_corrected.as_matrix()
 
-    Returns:
-        Corrected 4x4 transformation matrix
-    """
-    # Extract current euler angles
-    R = pose[:3, :3]
-    sy = np.sqrt(R[0, 0]**2 + R[1, 0]**2)
-    singular = sy < 1e-6
-
-    if not singular:
-        pitch = np.arctan2(R[2, 1], R[2, 2])
-        yaw = np.arctan2(-R[2, 0], sy)
-        roll = np.arctan2(R[1, 0], R[0, 0])
-    else:
-        pitch = np.arctan2(-R[1, 2], R[1, 1])
-        yaw = np.arctan2(-R[2, 0], sy)
-        roll = 0
-
-    # Check if we need to flip (180 degree rotation around Z)
-    need_flip = False
-
-    if np.sign(pitch) == np.sign(yaw):
-        # Same sign: both should be positive
-        if pitch < 0:
-            need_flip = True
-    else:
-        # Different sign: pitch positive, yaw negative
-        if pitch < 0:
-            need_flip = True
-
-    if need_flip:
-        # Flip 180 degrees around Z-axis
-        flip_z = np.array([
-            [-1, 0, 0, 0],
-            [0, -1, 0, 0],
-            [0, 0, 1, 0],
-            [0, 0, 0, 1]
-        ], dtype=np.float64)
-        pose = pose @ flip_z
-
-    return pose
-
-
-def rotation_matrix_to_euler(R: np.ndarray) -> Tuple[float, float, float]:
-    """
-    Convert 3x3 rotation matrix to Euler angles.
-
-    Args:
-        R: 3x3 rotation matrix
-
-    Returns:
-        Tuple of (pitch, yaw, roll) in degrees
-    """
-    sy = np.sqrt(R[0, 0]** 2 + R[1, 0] ** 2)
-    singular = sy < 1e-6
-
-    if not singular:
-        pitch = np.degrees(np.arctan2(R[2, 1], R[2, 2]))
-        yaw = np.degrees(np.arctan2(-R[2, 0], sy))
-        roll = np.degrees(np.arctan2(R[1, 0], R[0, 0]))
-    else:
-        pitch = np.degrees(np.arctan2(-R[1, 2], R[1, 1]))
-        yaw = np.degrees(np.arctan2(-R[2, 0], sy))
-        roll = 0
-
-    return pitch, yaw, roll
-
-
-def normalize_angle(angle: float) -> float:
-    """Normalize angle to [-90, 90] range."""
-    if angle > 90:
-        return angle - 180
-    elif angle < -90:
-        return angle + 180
-    return angle
-
-
-def convert_pose_for_saving(pose: np.ndarray) -> np.ndarray:
-    """
-    Convert pose matrix with normalized Euler angles for saving.
-
-    Args:
-        pose: 4x4 transformation matrix
-
-    Returns:
-        Modified 4x4 transformation matrix with corrected rotation
-    """
-    pitch, yaw, roll = rotation_matrix_to_euler(pose[:3, :3])
-    pitch_save = normalize_angle(-pitch)
-    yaw_save = normalize_angle(-yaw)
-    roll_save = normalize_angle(roll)
-
-    rot_corrected = Rot.from_euler('xyz', [pitch_save, yaw_save, roll_save], degrees=True)
-    pose_save = pose.copy()
-    pose_save[:3, :3] = rot_corrected.as_matrix()
-
-    return pose_save
+        return pose_save
 
 
 # =============================================================================
 # Visualization
 # =============================================================================
 
-def create_visualization(
-    color: np.ndarray,
-    pose: np.ndarray,
-    mask: np.ndarray,
-    K: np.ndarray,
-    bbox: np.ndarray,
-    extents: np.ndarray
-) -> np.ndarray:
-    """
-    Create visualization image with pose, mask, and text overlay.
+class PoseVisualizer:
+    """Pose 시각화 유틸리티."""
 
-    Args:
-        color: RGB image (H, W, 3)
-        pose: 4x4 transformation matrix
-        mask: Binary mask (H, W)
-        K: 3x3 camera intrinsic matrix
-        bbox: Object bounding box (2, 3)
-        extents: Object extents (3,)
+    def __init__(self, K: np.ndarray, bbox: np.ndarray, extents: np.ndarray):
+        self.K = K
+        self.bbox = bbox
+        self.extents = extents
+        self.axis_scale = max(extents)
 
-    Returns:
-        Visualization image (H, W, 3)
-    """
-    # Draw 3D bounding box
-    vis = draw_posed_3d_box(K, img=color, ob_in_cam=pose, bbox=bbox)
+    def create_visualization(
+        self,
+        color: np.ndarray,
+        pose: np.ndarray,
+        mask: np.ndarray
+    ) -> np.ndarray:
+        """Pose, 마스크, 텍스트 오버레이가 포함된 시각화 이미지 생성."""
+        from estimater import draw_posed_3d_box, draw_xyz_axis
 
-    # Draw coordinate axes (with 180 deg rotation for visualization)
-    axis_scale = max(extents)
-    Rx_180 = np.array([
-        [1, 0, 0, 0],
-        [0, -1, 0, 0],
-        [0, 0, -1, 0],
-        [0, 0, 0, 1]
-    ], dtype=np.float64)
-    pose_vis = pose @ Rx_180
-    vis = draw_xyz_axis(
-        vis, ob_in_cam=pose_vis, scale=axis_scale, K=K,
-        thickness=3, transparency=0, is_input_rgb=True
-    )
+        vis = draw_posed_3d_box(self.K, img=color, ob_in_cam=pose, bbox=self.bbox)
+        vis = self._draw_axes(vis, pose)
+        vis = self._overlay_mask(vis, mask)
+        vis = self._add_pose_text(vis, pose)
 
-    # Overlay mask (red with yellow contour)
-    mask_overlay = np.zeros_like(vis)
-    mask_overlay[mask] = [255, 0, 0]
-    vis = cv2.addWeighted(vis, 0.7, mask_overlay, 0.3, 0)
+        return vis
 
-    mask_uint8 = mask.astype(np.uint8) * 255
-    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cv2.drawContours(vis, contours, -1, (255, 255, 0), 2)
+    def _draw_axes(self, vis: np.ndarray, pose: np.ndarray) -> np.ndarray:
+        """좌표축 그리기."""
+        from estimater import draw_xyz_axis
 
-    # Add text overlay
-    vis = add_pose_text(vis, pose)
+        pose_vis = pose @ PoseCorrector.FLIP_X
+        return draw_xyz_axis(
+            vis, ob_in_cam=pose_vis, scale=self.axis_scale, K=self.K,
+            thickness=3, transparency=0, is_input_rgb=True
+        )
 
-    return vis
+    def _overlay_mask(self, vis: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """마스크 오버레이 (빨강 + 노랑 윤곽선)."""
+        mask_overlay = np.zeros_like(vis)
+        mask_overlay[mask] = [255, 0, 0]
+        vis = cv2.addWeighted(vis, 0.7, mask_overlay, 0.3, 0)
+
+        mask_uint8 = mask.astype(np.uint8) * 255
+        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(vis, contours, -1, (255, 255, 0), 2)
+
+        return vis
+
+    def _add_pose_text(self, vis: np.ndarray, pose: np.ndarray) -> np.ndarray:
+        """Pose 정보 텍스트 오버레이."""
+        trans = pose[:3, 3]
+        pitch, yaw, roll = RotationUtils.to_euler(pose[:3, :3])
+        pitch = RotationUtils.normalize_angle(-pitch)
+        yaw = RotationUtils.normalize_angle(-yaw)
+        roll = RotationUtils.normalize_angle(roll)
+
+        vis_bgr = cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
+        font, color = cv2.FONT_HERSHEY_SIMPLEX, (0, 255, 0)
+
+        texts = [
+            (f'X: {trans[0] * 100:+6.2f} cm', 25),
+            (f'Y: {trans[1] * 100:+6.2f} cm', 50),
+            (f'Z: {trans[2] * 100:+6.2f} cm', 75),
+            (f'Roll:  {roll:+7.2f} deg', 105),
+            (f'Pitch: {pitch:+7.2f} deg', 130),
+            (f'Yaw:   {yaw:+7.2f} deg', 155),
+        ]
+
+        for text, y in texts:
+            cv2.putText(vis_bgr, text, (10, y), font, 0.6, color, 2)
+
+        return cv2.cvtColor(vis_bgr, cv2.COLOR_BGR2RGB)
 
 
-def add_pose_text(vis: np.ndarray, pose: np.ndarray) -> np.ndarray:
-    """Add pose information as text overlay on image."""
-    trans = pose[:3, 3]
-    pitch, yaw, roll = rotation_matrix_to_euler(pose[:3, :3])
-    pitch = normalize_angle(-pitch)
-    yaw = normalize_angle(-yaw)
-    roll = normalize_angle(roll)
+# =============================================================================
+# Pipeline
+# =============================================================================
 
-    vis_bgr = cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    color = (0, 255, 0)
+class PoseEstimationPipeline:
+    """Pose 추정 파이프라인."""
 
-    texts = [
-        (f'X: {trans[0] * 100:+6.2f} cm', 25),
-        (f'Y: {trans[1] * 100:+6.2f} cm', 50),
-        (f'Z: {trans[2] * 100:+6.2f} cm', 75),
-        (f'Roll:  {roll:+7.2f} deg', 105),
-        (f'Pitch: {pitch:+7.2f} deg', 130),
-        (f'Yaw:   {yaw:+7.2f} deg', 155),
-    ]
+    def __init__(self, config: EstimationConfig):
+        self.config = config
+        self._setup_directories()
+        self._init_components()
 
-    for text, y in texts:
-        cv2.putText(vis_bgr, text, (10, y), font, 0.6, color, 2)
+    def _setup_directories(self) -> None:
+        """출력 디렉토리 설정."""
+        debug_dir = Path(self.config.debug.directory)
+        self.output_dirs = {
+            'root': debug_dir,
+            'vis': debug_dir / 'track_vis',
+            'ob_in_cam': debug_dir / 'ob_in_cam',
+            'cam_in_ob': debug_dir / 'cam_in_ob',
+        }
 
-    return cv2.cvtColor(vis_bgr, cv2.COLOR_BGR2RGB)
+        for path in self.output_dirs.values():
+            path.mkdir(parents=True, exist_ok=True)
+            for f in path.iterdir():
+                if f.is_file():
+                    f.unlink()
+
+    def _init_components(self) -> None:
+        """파이프라인 구성 요소 초기화."""
+        import trimesh
+        import nvdiffrast.torch as dr
+        from estimater import (
+            FoundationPose, ScorePredictor, PoseRefinePredictor,
+            set_logging_format, set_seed
+        )
+        from datareader import YcbineoatReader
+        from mask_generator import create_mask_generator
+
+        set_logging_format()
+        set_seed(0)
+
+        # Mesh 로드
+        self.mesh = self._load_mesh()
+        self.extents = self.mesh.extents
+        self.bbox = np.stack([-self.extents / 2, self.extents / 2], axis=0)
+
+        # FoundationPose 초기화
+        symmetry_tfs = SymmetryGenerator.create(
+            self.config.pose.symmetry,
+            self.config.pose.symmetry_step
+        )
+        logging.info(f"대칭: {self.config.pose.symmetry} ({len(symmetry_tfs)}개 변환)")
+
+        self.estimator = FoundationPose(
+            model_pts=self.mesh.vertices,
+            model_normals=self.mesh.vertex_normals,
+            symmetry_tfs=symmetry_tfs,
+            mesh=self.mesh,
+            scorer=ScorePredictor(),
+            refiner=PoseRefinePredictor(),
+            debug_dir=str(self.output_dirs['root']),
+            debug=self.config.debug.level,
+            glctx=dr.RasterizeCudaContext()
+        )
+        logging.info("FoundationPose 초기화 완료")
+
+        # 데이터 리더 초기화
+        self.reader = YcbineoatReader(
+            video_dir=self.config.scene.directory,
+            shorter_side=None,
+            zfar=np.inf
+        )
+        logging.info(f"{len(self.reader.color_files)}개 프레임 로드: {self.config.scene.directory}")
+
+        # 마스크 생성기 초기화
+        mask_kwargs = {}
+        if self.config.mask.model_type == 'maskrcnn' and self.config.mask.config_file:
+            mask_kwargs['config_file'] = self.config.mask.config_file
+
+        self.mask_generator = create_mask_generator(
+            model_path=self.config.mask.model_path,
+            model_type=self.config.mask.model_type,
+            conf_threshold=self.config.mask.confidence,
+            **mask_kwargs
+        )
+        logging.info(f"마스크 생성기: {self.config.mask.model_type} (conf={self.config.mask.confidence})")
+
+        # 시각화 도구
+        self.visualizer = PoseVisualizer(self.reader.K, self.bbox, self.extents)
+
+    def _load_mesh(self):
+        """Mesh 파일 로드 및 스케일 적용."""
+        import trimesh
+
+        mesh = trimesh.load(self.config.mesh.file_path)
+        if isinstance(mesh, trimesh.Scene):
+            mesh = mesh.dump(concatenate=True)
+
+        if self.config.mesh.scale != 1.0:
+            mesh.apply_scale(self.config.mesh.scale)
+            logging.info(f"Mesh 스케일: {self.config.mesh.scale} (extents: {mesh.extents})")
+
+        return mesh
+
+    def _get_frame_indices(self) -> List[int]:
+        """처리할 프레임 인덱스 목록 생성."""
+        total = len(self.reader.color_files)
+        end = self.config.scene.frame_end if self.config.scene.frame_end >= 0 else total
+
+        return list(range(
+            self.config.scene.frame_start,
+            min(end, total),
+            self.config.scene.frame_step
+        ))
+
+    def run(self) -> None:
+        """Pose 추정 파이프라인 실행."""
+        frame_indices = self._get_frame_indices()
+        total_frames = len(self.reader.color_files)
+
+        logging.info(
+            f"{len(frame_indices)}개 프레임 처리 예정 "
+            f"(step={self.config.scene.frame_step}, "
+            f"range={self.config.scene.frame_start}-{frame_indices[-1] if frame_indices else 0})"
+        )
+
+        pose = None
+
+        for i in frame_indices:
+            logging.info(f"프레임 처리 중: {i}/{total_frames - 1}")
+
+            result = self._process_frame(i, pose)
+            if result is None:
+                continue
+
+            pose = result
+
+        logging.info(f"완료! 결과 저장 위치: {self.output_dirs['root']}/")
+
+    def _process_frame(self, frame_idx: int, prev_pose: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        """단일 프레임 처리."""
+        color = self.reader.get_color(frame_idx)
+        depth = self.reader.get_depth(frame_idx)
+
+        # 마스크 생성
+        mask, mask_info = self.mask_generator.get_mask_with_depth(color, depth)
+        if mask is None:
+            logging.warning(f"프레임 {frame_idx}: 마스크 없음 - {mask_info.get('error', 'unknown')}")
+            return None
+
+        logging.info(f"프레임 {frame_idx}: 마스크 OK (conf={mask_info.get('confidence', 0):.2f})")
+        mask = mask.astype(bool)
+
+        # Pose 추정
+        pose = self._estimate_pose(color, depth, mask, prev_pose)
+
+        # Pose 보정
+        pose = self._correct_pose(pose)
+
+        # 결과 저장
+        self._save_results(frame_idx, pose, color, mask)
+
+        return pose
+
+    def _estimate_pose(
+        self,
+        color: np.ndarray,
+        depth: np.ndarray,
+        mask: np.ndarray,
+        prev_pose: Optional[np.ndarray]
+    ) -> np.ndarray:
+        """Pose 추정 수행."""
+        if prev_pose is None or not self.config.pose.use_tracking:
+            pose = self.estimator.register(
+                K=self.reader.K,
+                rgb=color,
+                depth=depth,
+                ob_mask=mask,
+                iteration=self.config.pose.est_refine_iter
+            )
+            self._debug_export(pose, depth, color)
+        else:
+            pose = self.estimator.track_one(
+                rgb=color,
+                depth=depth,
+                K=self.reader.K,
+                iteration=self.config.pose.track_refine_iter
+            )
+        return pose
+
+    def _correct_pose(self, pose: np.ndarray) -> np.ndarray:
+        """Pose 보정 적용."""
+        if self.config.pose.fix_z_axis:
+            pose = PoseCorrector.fix_z_axis_direction(pose)
+
+        # fix_pitch_yaw 명시적 지정 또는 180도 대칭 사용 시 자동 적용
+        symmetry = self.config.pose.symmetry
+        auto_fix_pitch = symmetry and '180' in symmetry
+        if self.config.pose.fix_pitch_yaw or auto_fix_pitch:
+            pose = PoseCorrector.fix_pitch_yaw_sign(pose)
+        return pose
+
+    def _save_results(
+        self,
+        frame_idx: int,
+        pose: np.ndarray,
+        color: np.ndarray,
+        mask: np.ndarray
+    ) -> None:
+        """결과 저장 (pose 행렬 및 시각화)."""
+        pose_save = PoseCorrector.convert_for_saving(pose)
+        frame_id = self.reader.id_strs[frame_idx]
+
+        np.savetxt(self.output_dirs['ob_in_cam'] / f'{frame_id}.txt', pose_save)
+        np.savetxt(self.output_dirs['cam_in_ob'] / f'{frame_id}.txt', np.linalg.inv(pose_save))
+
+        if self.config.debug.level >= 1:
+            vis = self.visualizer.create_visualization(color, pose, mask)
+            if self.config.debug.level >= 2:
+                imageio.imwrite(self.output_dirs['vis'] / f'{frame_id}.png', vis)
+
+    def _debug_export(self, pose: np.ndarray, depth: np.ndarray, color: np.ndarray) -> None:
+        """디버그용 mesh/pointcloud 내보내기."""
+        if self.config.debug.level < 3:
+            return
+
+        try:
+            import open3d as o3d
+            from estimater import depth2xyzmap, toOpen3dCloud
+
+            m = self.mesh.copy()
+            m.apply_transform(pose)
+            m.export(str(self.output_dirs['root'] / 'model_tf.obj'))
+
+            xyz_map = depth2xyzmap(depth, self.reader.K)
+            valid = depth >= 0.001
+            pcd = toOpen3dCloud(xyz_map[valid], color[valid])
+            o3d.io.write_point_cloud(str(self.output_dirs['root'] / 'scene_complete.ply'), pcd)
+        except ImportError:
+            pass
 
 
 # =============================================================================
@@ -417,109 +641,50 @@ def add_pose_text(vis: np.ndarray, pose: np.ndarray) -> np.ndarray:
 # =============================================================================
 
 def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
+    """명령줄 인자 파싱."""
     code_dir = os.path.dirname(os.path.realpath(__file__))
 
     parser = argparse.ArgumentParser(
-        description='6DoF pose estimation with FoundationPose',
+        description='FoundationPose를 이용한 6DoF Pose 추정',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
-    # Mesh arguments
-    mesh_group = parser.add_argument_group('Mesh')
-    mesh_group.add_argument(
-        '--mesh_file', type=str,
-        default=f'{code_dir}/vcb/ref_views/ob_000001/model/model.obj',
-        help='Path to object mesh file (.obj)'
-    )
-    mesh_group.add_argument(
-        '--mesh_scale', type=float, default=0.01,
-        help='Scale factor for mesh (e.g., 0.01 for cm to m)'
-    )
+    # Mesh 설정
+    mesh = parser.add_argument_group('Mesh')
+    mesh.add_argument('--mesh_file', type=str,
+        default=f'{code_dir}/vcb/ref_views/ob_000001/model/model.obj')
+    mesh.add_argument('--mesh_scale', type=float, default=0.01)
 
-    # Scene arguments
-    scene_group = parser.add_argument_group('Scene')
-    scene_group.add_argument(
-        '--test_scene_dir', type=str,
-        default=f'{code_dir}/vcb/ref_views/test_scene',
-        help='Directory containing test scene (rgb/, depth/)'
-    )
-    scene_group.add_argument(
-        '--frame_step', type=int, default=1,
-        help='Process every N-th frame'
-    )
-    scene_group.add_argument(
-        '--frame_start', type=int, default=0,
-        help='Start frame index'
-    )
-    scene_group.add_argument(
-        '--frame_end', type=int, default=-1,
-        help='End frame index (-1 for all)'
-    )
+    # Scene 설정
+    scene = parser.add_argument_group('Scene')
+    scene.add_argument('--test_scene_dir', type=str,
+        default=f'{code_dir}/vcb/ref_views/test_scene')
+    scene.add_argument('--frame_step', type=int, default=1)
+    scene.add_argument('--frame_start', type=int, default=0)
+    scene.add_argument('--frame_end', type=int, default=-1)
 
-    # Pose estimation arguments
-    pose_group = parser.add_argument_group('Pose Estimation')
-    pose_group.add_argument(
-        '--est_refine_iter', type=int, default=5,
-        help='Refinement iterations for registration'
-    )
-    pose_group.add_argument(
-        '--track_refine_iter', type=int, default=2,
-        help='Refinement iterations for tracking'
-    )
-    pose_group.add_argument(
-        '--use_tracking', action='store_true',
-        help='Use tracking after first frame (faster but less robust)'
-    )
-    pose_group.add_argument(
-        '--symmetry', type=str, default='none',
-        choices=['none', 'z', 'z180', 'x', 'x180', 'y', 'y180', 'xy', 'xz', 'yz', 'xyz'],
-        help='Object symmetry type for pose clustering'
-    )
-    pose_group.add_argument(
-        '--symmetry_step', type=float, default=5.0,
-        help='Angle step (degrees) for continuous symmetry (z, x, y)'
-    )
-    pose_group.add_argument(
-        '--fix_z_axis', action='store_true',
-        help='Force Z-axis to point towards camera (for wall-mounted objects)'
-    )
-    pose_group.add_argument(
-        '--fix_pitch_yaw', action='store_true',
-        help='Fix pitch/yaw sign ambiguity (same sign -> both positive, diff sign -> pitch+/yaw-)'
-    )
+    # Pose 설정
+    pose = parser.add_argument_group('Pose Estimation')
+    pose.add_argument('--est_refine_iter', type=int, default=5)
+    pose.add_argument('--track_refine_iter', type=int, default=2)
+    pose.add_argument('--use_tracking', action='store_true')
+    pose.add_argument('--symmetry', type=str, default='none',
+        choices=['none', 'z', 'z180', 'x', 'x180', 'y', 'y180', 'xy', 'xz', 'yz', 'xyz'])
+    pose.add_argument('--symmetry_step', type=float, default=5.0)
+    pose.add_argument('--fix_z_axis', action='store_true')
+    pose.add_argument('--fix_pitch_yaw', action='store_true')
 
-    # Mask generation arguments
-    mask_group = parser.add_argument_group('Mask Generation')
-    mask_group.add_argument(
-        '--mask_model', type=str, required=True,
-        help='Path to segmentation model (.pt for YOLO, .pth for Mask R-CNN)'
-    )
-    mask_group.add_argument(
-        '--mask_type', type=str, default='yolo',
-        choices=['yolo', 'maskrcnn'],
-        help='Segmentation model type'
-    )
-    mask_group.add_argument(
-        '--mask_conf', type=float, default=0.5,
-        help='Confidence threshold for mask generation'
-    )
-    mask_group.add_argument(
-        '--mask_config', type=str, default=None,
-        help='Detectron2 config file (Mask R-CNN only)'
-    )
+    # Mask 설정
+    mask = parser.add_argument_group('Mask Generation')
+    mask.add_argument('--mask_model', type=str, required=True)
+    mask.add_argument('--mask_type', type=str, default='yolo', choices=['yolo', 'maskrcnn'])
+    mask.add_argument('--mask_conf', type=float, default=0.5)
+    mask.add_argument('--mask_config', type=str, default=None)
 
-    # Debug arguments
-    debug_group = parser.add_argument_group('Debug')
-    debug_group.add_argument(
-        '--debug', type=int, default=2,
-        help='Debug level (0=none, 1=vis, 2=save, 3=full)'
-    )
-    debug_group.add_argument(
-        '--debug_dir', type=str,
-        default=f'{code_dir}/vcb/debug/rcnn',
-        help='Directory for debug outputs'
-    )
+    # Debug 설정
+    debug = parser.add_argument_group('Debug')
+    debug.add_argument('--debug', type=int, default=2)
+    debug.add_argument('--debug_dir', type=str, default=f'{code_dir}/vcb/debug/rcnn')
 
     return parser.parse_args()
 
@@ -529,177 +694,11 @@ def parse_args() -> argparse.Namespace:
 # =============================================================================
 
 def main():
-    """Main entry point for pose estimation."""
+    """메인 진입점."""
     args = parse_args()
-
-    set_logging_format()
-    set_seed(0)
-
-    # -------------------------------------------------------------------------
-    # Load mesh
-    # -------------------------------------------------------------------------
-    mesh = trimesh.load(args.mesh_file)
-    if isinstance(mesh, trimesh.Scene):
-        mesh = mesh.dump(concatenate=True)
-
-    if args.mesh_scale != 1.0:
-        mesh.apply_scale(args.mesh_scale)
-        logging.info(f"Mesh scaled by {args.mesh_scale} (extents: {mesh.extents})")
-
-    extents = mesh.extents
-    bbox = np.stack([-extents / 2, extents / 2], axis=0).reshape(2, 3)
-
-    # -------------------------------------------------------------------------
-    # Setup directories
-    # -------------------------------------------------------------------------
-    debug_dir = args.debug_dir
-    subdirs = ['track_vis', 'ob_in_cam', 'cam_in_ob']
-    os.makedirs(debug_dir, exist_ok=True)
-    for subdir in subdirs:
-        subdir_path = os.path.join(debug_dir, subdir)
-        os.makedirs(subdir_path, exist_ok=True)
-        # Clean existing files
-        for f in os.listdir(subdir_path):
-            os.remove(os.path.join(subdir_path, f))
-
-    # -------------------------------------------------------------------------
-    # Create symmetry transformations
-    # -------------------------------------------------------------------------
-    symmetry_tfs = create_symmetry_tfs(args.symmetry, args.symmetry_step)
-    logging.info(f"Symmetry: {args.symmetry} ({len(symmetry_tfs)} transformations)")
-
-    # -------------------------------------------------------------------------
-    # Initialize FoundationPose
-    # -------------------------------------------------------------------------
-    scorer = ScorePredictor()
-    refiner = PoseRefinePredictor()
-    glctx = dr.RasterizeCudaContext()
-
-    est = FoundationPose(
-        model_pts=mesh.vertices,
-        model_normals=mesh.vertex_normals,
-        symmetry_tfs=symmetry_tfs,
-        mesh=mesh,
-        scorer=scorer,
-        refiner=refiner,
-        debug_dir=debug_dir,
-        debug=args.debug,
-        glctx=glctx
-    )
-    logging.info("FoundationPose estimator initialized")
-
-    # -------------------------------------------------------------------------
-    # Initialize data reader
-    # -------------------------------------------------------------------------
-    reader = YcbineoatReader(
-        video_dir=args.test_scene_dir,
-        shorter_side=None,
-        zfar=np.inf
-    )
-    logging.info(f"Loaded {len(reader.color_files)} frames from {args.test_scene_dir}")
-
-    # -------------------------------------------------------------------------
-    # Initialize mask generator
-    # -------------------------------------------------------------------------
-    mask_kwargs = {}
-    if args.mask_type == 'maskrcnn' and args.mask_config:
-        mask_kwargs['config_file'] = args.mask_config
-
-    mask_generator = create_mask_generator(
-        model_path=args.mask_model,
-        model_type=args.mask_type,
-        conf_threshold=args.mask_conf,
-        **mask_kwargs
-    )
-    logging.info(f"Mask generator: {args.mask_type} (conf={args.mask_conf})")
-
-    # -------------------------------------------------------------------------
-    # Compute frame indices
-    # -------------------------------------------------------------------------
-    total_frames = len(reader.color_files)
-    frame_end = args.frame_end if args.frame_end >= 0 else total_frames
-    frame_indices = list(range(
-        args.frame_start,
-        min(frame_end, total_frames),
-        args.frame_step
-    ))
-    logging.info(
-        f"Processing {len(frame_indices)} frames "
-        f"(step={args.frame_step}, range={args.frame_start}-{frame_end})"
-    )
-
-    # -------------------------------------------------------------------------
-    # Main loop
-    # -------------------------------------------------------------------------
-    pose = None
-
-    for i in frame_indices:
-        logging.info(f"Processing frame {i}/{total_frames - 1}")
-
-        color = reader.get_color(i)
-        depth = reader.get_depth(i)
-
-        # Generate mask
-        mask, mask_info = mask_generator.get_mask_with_depth(color, depth)
-
-        if mask is None:
-            logging.warning(f"Frame {i}: No mask - {mask_info.get('error', 'unknown')}")
-            continue
-
-        logging.info(f"Frame {i}: Mask OK (conf={mask_info.get('confidence', 0):.2f})")
-        mask = mask.astype(bool)
-
-        # Pose estimation
-        if pose is None or not args.use_tracking:
-            pose = est.register(
-                K=reader.K,
-                rgb=color,
-                depth=depth,
-                ob_mask=mask,
-                iteration=args.est_refine_iter
-            )
-
-            # Debug: export transformed mesh and point cloud
-            if args.debug >= 3:
-                m = mesh.copy()
-                m.apply_transform(pose)
-                m.export(f'{debug_dir}/model_tf.obj')
-
-                xyz_map = depth2xyzmap(depth, reader.K)
-                valid = depth >= 0.001
-                pcd = toOpen3dCloud(xyz_map[valid], color[valid])
-                o3d.io.write_point_cloud(f'{debug_dir}/scene_complete.ply', pcd)
-        else:
-            pose = est.track_one(
-                rgb=color,
-                depth=depth,
-                K=reader.K,
-                iteration=args.track_refine_iter
-            )
-
-        # Fix Z-axis direction for wall-mounted objects
-        if args.fix_z_axis:
-            pose = fix_z_axis_direction(pose)
-
-        # Fix pitch/yaw sign ambiguity
-        if args.fix_pitch_yaw:
-            pose = fix_pitch_yaw_sign(pose)
-
-        # Save pose matrices
-        pose_save = convert_pose_for_saving(pose)
-        frame_id = reader.id_strs[i]
-
-        np.savetxt(f'{debug_dir}/ob_in_cam/{frame_id}.txt', pose_save.reshape(4, 4))
-        np.savetxt(f'{debug_dir}/cam_in_ob/{frame_id}.txt', np.linalg.inv(pose_save).reshape(4, 4))
-
-        # Visualization
-        if args.debug >= 1:
-            vis = create_visualization(color, pose, mask, reader.K, bbox, extents)
-
-            if args.debug >= 2:
-                imageio.imwrite(f'{debug_dir}/track_vis/{frame_id}.png', vis)
-
-    logging.info(f"Done! Results saved to {debug_dir}/")
+    config = EstimationConfig.from_args(args)
+    pipeline = PoseEstimationPipeline(config)
+    pipeline.run()
 
 
 if __name__ == '__main__':
