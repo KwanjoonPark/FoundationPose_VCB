@@ -54,7 +54,7 @@ def vis_batch_data_scores(pose_data, ids, scores, pad_margin=5):
 
 
 @torch.no_grad()
-def make_crop_data_batch(render_size, ob_in_cams, mesh, rgb, depth, K, crop_ratio, normal_map=None, mesh_diameter=None, glctx=None, mesh_tensors=None, dataset:TripletH5Dataset=None, cfg=None):
+def make_crop_data_batch(render_size, ob_in_cams, mesh, rgb, depth, K, crop_ratio, normal_map=None, mesh_diameter=None, glctx=None, mesh_tensors=None, dataset:TripletH5Dataset=None, cfg=None, ob_mask=None):
   logging.info("Welcome make_crop_data_batch")
   H,W = depth.shape[:2]
 
@@ -88,6 +88,19 @@ def make_crop_data_batch(render_size, ob_in_cams, mesh, rgb, depth, K, crop_rati
 
   rgbBs = kornia.geometry.transform.warp_perspective(torch.as_tensor(rgb, dtype=torch.float, device='cuda').permute(2,0,1)[None].expand(B,-1,-1,-1), tf_to_crops, dsize=render_size, mode='bilinear', align_corners=False)
   depthBs = kornia.geometry.transform.warp_perspective(torch.as_tensor(depth, dtype=torch.float, device='cuda')[None,None].expand(B,-1,-1,-1), tf_to_crops, dsize=render_size, mode='nearest', align_corners=False)
+
+  # Compute mask IoU between rendered mask and actual mask for scoring bonus
+  mask_ious = None
+  if ob_mask is not None:
+    maskBs = kornia.geometry.transform.warp_perspective(torch.as_tensor(ob_mask, dtype=torch.float, device='cuda')[None,None].expand(B,-1,-1,-1), tf_to_crops, dsize=render_size, mode='nearest', align_corners=False)
+    # Rendered mask: where depth > 0
+    maskAs = (depth_rs > 0).float()
+    # Compute IoU for each pose hypothesis
+    intersection = (maskAs * maskBs).sum(dim=(1, 2, 3))
+    union = ((maskAs + maskBs) > 0).float().sum(dim=(1, 2, 3))
+    mask_ious = intersection / (union + 1e-6)
+    logging.info(f"Mask IoU - min: {mask_ious.min():.3f}, max: {mask_ious.max():.3f}, mean: {mask_ious.mean():.3f}")
+  logging.info("warp done")
   if rgb_rs.shape[-2:]!=cfg['input_resize']:
     rgbAs = kornia.geometry.transform.warp_perspective(rgb_rs, tf_to_crops, dsize=render_size, mode='bilinear', align_corners=False)
     depthAs = kornia.geometry.transform.warp_perspective(depth_rs, tf_to_crops, dsize=render_size, mode='nearest', align_corners=False)
@@ -111,7 +124,7 @@ def make_crop_data_batch(render_size, ob_in_cams, mesh, rgb, depth, K, crop_rati
 
   logging.info("pose batch data done")
 
-  return pose_data
+  return pose_data, mask_ious
 
 
 class ScorePredictor:
@@ -158,9 +171,10 @@ class ScorePredictor:
 
 
   @torch.inference_mode()
-  def predict(self, rgb, depth, K, ob_in_cams, normal_map=None, get_vis=False, mesh=None, mesh_tensors=None, glctx=None, mesh_diameter=None):
+  def predict(self, rgb, depth, K, ob_in_cams, normal_map=None, get_vis=False, mesh=None, mesh_tensors=None, glctx=None, mesh_diameter=None, ob_mask=None):
     '''
     @rgb: np array (H,W,3)
+    @ob_mask: np array (H,W) - object mask to filter background pixels in scoring
     '''
     logging.info(f"ob_in_cams:{ob_in_cams.shape}")
     ob_in_cams = torch.as_tensor(ob_in_cams, dtype=torch.float, device='cuda')
@@ -177,7 +191,7 @@ class ScorePredictor:
     rgb = torch.as_tensor(rgb, device='cuda', dtype=torch.float)
     depth = torch.as_tensor(depth, device='cuda', dtype=torch.float)
 
-    pose_data = make_crop_data_batch(self.cfg.input_resize, ob_in_cams, mesh, rgb, depth, K, crop_ratio=self.cfg['crop_ratio'], glctx=glctx, mesh_tensors=mesh_tensors, dataset=self.dataset, cfg=self.cfg, mesh_diameter=mesh_diameter)
+    pose_data, mask_ious = make_crop_data_batch(self.cfg.input_resize, ob_in_cams, mesh, rgb, depth, K, crop_ratio=self.cfg['crop_ratio'], glctx=glctx, mesh_tensors=mesh_tensors, dataset=self.dataset, cfg=self.cfg, mesh_diameter=mesh_diameter, ob_mask=ob_mask)
 
     def find_best_among_pairs(pose_data:BatchPoseData):
       logging.info(f'pose_data.rgbAs.shape[0]: {pose_data.rgbAs.shape[0]}')
@@ -212,6 +226,12 @@ class ScorePredictor:
       pose_data_iter = pose_data.select_by_indices(global_ids)
 
     scores = scores_global
+
+    # Add mask IoU bonus to scores (if mask provided)
+    if mask_ious is not None:
+      iou_bonus = mask_ious * 10.0  # Scale IoU (0-1) to significant bonus
+      scores = scores + iou_bonus
+      logging.info(f"Applied mask IoU bonus - min: {iou_bonus.min():.3f}, max: {iou_bonus.max():.3f}")
 
     logging.info(f'forward done')
     torch.cuda.empty_cache()

@@ -57,10 +57,12 @@ class PoseConfig:
     est_refine_iter: int = 5
     track_refine_iter: int = 2
     use_tracking: bool = False
-    symmetry: str = 'none'
+    symmetry: str = 'z180'
     symmetry_step: float = 5.0
-    fix_z_axis: bool = False
-    fix_pitch_yaw: bool = False
+    fix_z_axis: bool = True
+    min_n_views: int = 40
+    inplane_step: int = 60
+    input_mode: str = 'rgb'  # 'rgb' or 'rgbd'
 
 
 @dataclass
@@ -70,6 +72,8 @@ class MaskConfig:
     model_type: str = 'yolo'
     confidence: float = 0.5
     config_file: Optional[str] = None
+    dilate_kernel: int = 0
+    dilate_iterations: int = 2
 
 
 @dataclass
@@ -106,13 +110,17 @@ class EstimationConfig:
                 symmetry=args.symmetry,
                 symmetry_step=args.symmetry_step,
                 fix_z_axis=args.fix_z_axis,
-                fix_pitch_yaw=args.fix_pitch_yaw,
+                min_n_views=args.min_n_views,
+                inplane_step=args.inplane_step,
+                input_mode=args.input_mode,
             ),
             mask=MaskConfig(
                 model_path=args.mask_model,
                 model_type=args.mask_type,
                 confidence=args.mask_conf,
                 config_file=args.mask_config,
+                dilate_kernel=args.mask_dilate,
+                dilate_iterations=args.mask_dilate_iter,
             ),
             debug=DebugConfig(level=args.debug, directory=args.debug_dir),
         )
@@ -456,9 +464,12 @@ class PoseEstimationPipeline:
             refiner=PoseRefinePredictor(),
             debug_dir=str(self.output_dirs['root']),
             debug=self.config.debug.level,
-            glctx=dr.RasterizeCudaContext()
+            glctx=dr.RasterizeCudaContext(),
+            min_n_views=self.config.pose.min_n_views,
+            inplane_step=self.config.pose.inplane_step,
+            front_hemisphere_only=self.config.pose.fix_z_axis
         )
-        logging.info("FoundationPose 초기화 완료")
+        logging.info(f"FoundationPose 초기화 완료 (front_hemisphere_only={self.config.pose.fix_z_axis})")
 
         # 데이터 리더 초기화
         self.reader = YcbineoatReader(
@@ -545,7 +556,17 @@ class PoseEstimationPipeline:
             return None
 
         logging.info(f"프레임 {frame_idx}: 마스크 OK (conf={mask_info.get('confidence', 0):.2f})")
-        mask = mask.astype(bool)
+
+        # 마스크 팽창 (dilation) - tight mask 문제 해결
+        if self.config.mask.dilate_kernel > 0:
+            kernel_size = self.config.mask.dilate_kernel
+            kernel = np.ones((kernel_size, kernel_size), np.uint8)
+            mask_uint8 = (mask * 255).astype(np.uint8)
+            mask_dilated = cv2.dilate(mask_uint8, kernel, iterations=self.config.mask.dilate_iterations)
+            mask = (mask_dilated > 127)
+            logging.info(f"프레임 {frame_idx}: 마스크 팽창 (kernel={kernel_size}, iter={self.config.mask.dilate_iterations})")
+        else:
+            mask = mask.astype(bool)
 
         # Pose 추정
         pose = self._estimate_pose(color, depth, mask, prev_pose)
@@ -566,11 +587,18 @@ class PoseEstimationPipeline:
         prev_pose: Optional[np.ndarray]
     ) -> np.ndarray:
         """Pose 추정 수행."""
+        # RGB 모드: depth=None으로 RGB-only 추론
+        if self.config.pose.input_mode == 'rgb':
+            depth_input = None
+            logging.info("RGB 모드: depth=None (RGB-only)")
+        else:
+            depth_input = depth
+
         if prev_pose is None or not self.config.pose.use_tracking:
             pose = self.estimator.register(
                 K=self.reader.K,
                 rgb=color,
-                depth=depth,
+                depth=depth_input,
                 ob_mask=mask,
                 iteration=self.config.pose.est_refine_iter
             )
@@ -578,7 +606,7 @@ class PoseEstimationPipeline:
         else:
             pose = self.estimator.track_one(
                 rgb=color,
-                depth=depth,
+                depth=depth_input,
                 K=self.reader.K,
                 iteration=self.config.pose.track_refine_iter
             )
@@ -589,10 +617,9 @@ class PoseEstimationPipeline:
         if self.config.pose.fix_z_axis:
             pose = PoseCorrector.fix_z_axis_direction(pose)
 
-        # fix_pitch_yaw 명시적 지정 또는 180도 대칭 사용 시 자동 적용
+        # 180도 대칭 사용 시 pitch/yaw 부호 보정 자동 적용
         symmetry = self.config.pose.symmetry
-        auto_fix_pitch = symmetry and '180' in symmetry
-        if self.config.pose.fix_pitch_yaw or auto_fix_pitch:
+        if symmetry and '180' in symmetry:
             pose = PoseCorrector.fix_pitch_yaw_sign(pose)
         return pose
 
@@ -652,7 +679,7 @@ def parse_args() -> argparse.Namespace:
     # Mesh 설정
     mesh = parser.add_argument_group('Mesh')
     mesh.add_argument('--mesh_file', type=str,
-        default=f'{code_dir}/vcb/ref_views/ob_000001/model/model.obj')
+        default=f'{code_dir}/vcb/ref_views/ob_000001/model/model_vc.ply')
     mesh.add_argument('--mesh_scale', type=float, default=0.01)
 
     # Scene 설정
@@ -668,18 +695,28 @@ def parse_args() -> argparse.Namespace:
     pose.add_argument('--est_refine_iter', type=int, default=5)
     pose.add_argument('--track_refine_iter', type=int, default=2)
     pose.add_argument('--use_tracking', action='store_true')
-    pose.add_argument('--symmetry', type=str, default='none',
+    pose.add_argument('--symmetry', type=str, default='z180',
         choices=['none', 'z', 'z180', 'x', 'x180', 'y', 'y180', 'xy', 'xz', 'yz', 'xyz'])
     pose.add_argument('--symmetry_step', type=float, default=5.0)
-    pose.add_argument('--fix_z_axis', action='store_true')
-    pose.add_argument('--fix_pitch_yaw', action='store_true')
+    pose.add_argument('--fix_z_axis', type=bool, default=True,
+        help='Filter back-facing poses (front hemisphere only)')
+    pose.add_argument('--min_n_views', type=int, default=40,
+        help='Number of viewpoints for pose hypothesis (default: 40)')
+    pose.add_argument('--inplane_step', type=int, default=60,
+        help='In-plane rotation step in degrees (default: 60)')
+    pose.add_argument('--input_mode', type=str, default='rgb',
+        choices=['rgb', 'rgbd'], help='Input mode: rgb (RGB only) or rgbd (RGB + Depth)')
 
     # Mask 설정
     mask = parser.add_argument_group('Mask Generation')
     mask.add_argument('--mask_model', type=str, required=True)
-    mask.add_argument('--mask_type', type=str, default='yolo', choices=['yolo', 'maskrcnn'])
+    mask.add_argument('--mask_type', type=str, default='maskrcnn', choices=['yolo', 'maskrcnn'])
     mask.add_argument('--mask_conf', type=float, default=0.5)
     mask.add_argument('--mask_config', type=str, default=None)
+    mask.add_argument('--mask_dilate', type=int, default=0,
+        help='Mask dilation kernel size (0=disabled, 3~7 recommended)')
+    mask.add_argument('--mask_dilate_iter', type=int, default=2,
+        help='Mask dilation iterations')
 
     # Debug 설정
     debug = parser.add_argument_group('Debug')

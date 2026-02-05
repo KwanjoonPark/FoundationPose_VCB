@@ -16,15 +16,16 @@ import yaml
 
 
 class FoundationPose:
-  def __init__(self, model_pts, model_normals, symmetry_tfs=None, mesh=None, scorer:ScorePredictor=None, refiner:PoseRefinePredictor=None, glctx=None, debug=0, debug_dir='/home/bowen/debug/novel_pose_debug/'):
+  def __init__(self, model_pts, model_normals, symmetry_tfs=None, mesh=None, scorer:ScorePredictor=None, refiner:PoseRefinePredictor=None, glctx=None, debug=0, debug_dir='/home/bowen/debug/novel_pose_debug/', min_n_views=40, inplane_step=60, front_hemisphere_only=False):
     self.gt_pose = None
     self.ignore_normal_flip = True
     self.debug = debug
     self.debug_dir = debug_dir
+    self.front_hemisphere_only = front_hemisphere_only
     os.makedirs(debug_dir, exist_ok=True)
 
     self.reset_object(model_pts, model_normals, symmetry_tfs=symmetry_tfs, mesh=mesh)
-    self.make_rotation_grid(min_n_views=40, inplane_step=60)
+    self.make_rotation_grid(min_n_views=min_n_views, inplane_step=inplane_step)
 
     self.glctx = glctx
 
@@ -117,6 +118,16 @@ class FoundationPose:
 
     rot_grid = np.asarray(rot_grid)
     logging.info(f"rot_grid:{rot_grid.shape}")
+
+    # Front hemisphere filter: keep only poses where object's Z-axis points toward camera
+    # For wall-mounted objects (like VCB handle), the back side is never visible
+    # In camera frame: object's +Z should point toward camera origin (i.e., -Z direction in camera coords)
+    if self.front_hemisphere_only:
+      z_axes = rot_grid[:, :3, 2]  # Object's Z-axis direction in camera frame
+      front_mask = z_axes[:, 2] < 0  # Z-axis pointing toward camera (-Z direction)
+      rot_grid = rot_grid[front_mask]
+      logging.info(f"front_hemisphere_only: filtered {(~front_mask).sum()} back-facing poses, remaining: {rot_grid.shape[0]}")
+
     rot_grid = mycpp.cluster_poses(30, 99999, rot_grid, self.symmetry_tfs.data.cpu().numpy())
     rot_grid = np.asarray(rot_grid)
     logging.info(f"after cluster, rot_grid:{rot_grid.shape}")
@@ -156,9 +167,32 @@ class FoundationPose:
     return center.reshape(3)
 
 
+  def guess_translation_rgb_only(self, mask, K, default_depth=0.5):
+    '''RGB-only 모드용 translation 추정.
+    마스크 중심과 기본 depth를 사용.
+    @mask: object mask
+    @K: camera intrinsics
+    @default_depth: 기본 거리 (미터)
+    '''
+    vs, us = np.where(mask > 0)
+    if len(us) == 0:
+      logging.info('mask is all zero')
+      return np.zeros((3))
+
+    uc = (us.min() + us.max()) / 2.0
+    vc = (vs.min() + vs.max()) / 2.0
+    zc = default_depth
+
+    center = (np.linalg.inv(K) @ np.asarray([uc, vc, 1]).reshape(3, 1)) * zc
+    logging.info(f'RGB-only translation: center={center.flatten()}, default_depth={default_depth}')
+
+    return center.reshape(3)
+
+
   def register(self, K, rgb, depth, ob_mask, ob_id=None, glctx=None, iteration=5):
     '''Copmute pose from given pts to self.pcd
     @pts: (N,3) np array, downsampled scene points
+    @depth: can be None for RGB-only mode
     '''
     set_seed(0)
     logging.info('Welcome')
@@ -170,10 +204,19 @@ class FoundationPose:
       else:
         self.glctx = glctx
 
-    depth = erode_depth(depth, radius=2, device='cuda')
-    depth = bilateral_filter_depth(depth, radius=2, device='cuda')
+    # RGB-only 모드 체크
+    rgb_only_mode = depth is None
 
-    if self.debug>=2:
+    if rgb_only_mode:
+      logging.info('RGB-only mode: depth=None')
+      H, W = rgb.shape[:2]
+      # 기본 depth 생성 (추후 pose로부터 계산)
+      depth = np.zeros((H, W), dtype=np.float32)
+    else:
+      depth = erode_depth(depth, radius=2, device='cuda')
+      depth = bilateral_filter_depth(depth, radius=2, device='cuda')
+
+    if self.debug>=2 and not rgb_only_mode:
       xyz_map = depth2xyzmap(depth, K)
       valid = xyz_map[...,2]>=0.001
       pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
@@ -181,21 +224,26 @@ class FoundationPose:
       cv2.imwrite(f'{self.debug_dir}/ob_mask.png', (ob_mask*255.0).clip(0,255))
 
     normal_map = None
-    valid = (depth>=0.001) & (ob_mask>0)
-    if valid.sum()<4:
-      logging.info(f'valid too small, return')
-      pose = np.eye(4)
-      pose[:3,3] = self.guess_translation(depth=depth, mask=ob_mask, K=K)
-      return pose
 
-    if self.debug>=2:
+    if rgb_only_mode:
+      # RGB-only: valid 체크 스킵, 기본 translation 추정
+      logging.info('RGB-only mode: skipping depth validation')
+    else:
+      valid = (depth>=0.001) & (ob_mask>0)
+      if valid.sum()<4:
+        logging.info(f'valid too small, return')
+        pose = np.eye(4)
+        pose[:3,3] = self.guess_translation(depth=depth, mask=ob_mask, K=K)
+        return pose
+
+    if self.debug>=2 and not rgb_only_mode:
       imageio.imwrite(f'{self.debug_dir}/color.png', rgb)
       cv2.imwrite(f'{self.debug_dir}/depth.png', (depth*1000).astype(np.uint16))
       valid = xyz_map[...,2]>=0.001
       pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
       o3d.io.write_point_cloud(f'{self.debug_dir}/scene_complete.ply',pcd)
 
-    self.H, self.W = depth.shape[:2]
+    self.H, self.W = rgb.shape[:2]
     self.K = K
     self.ob_id = ob_id
     self.ob_mask = ob_mask
@@ -203,7 +251,12 @@ class FoundationPose:
     poses = self.generate_random_pose_hypo(K=K, rgb=rgb, depth=depth, mask=ob_mask, scene_pts=None)
     poses = poses.data.cpu().numpy()
     logging.info(f'poses:{poses.shape}')
-    center = self.guess_translation(depth=depth, mask=ob_mask, K=K)
+
+    if rgb_only_mode:
+      # RGB-only: 기본 거리 사용 (마스크 중심 + 기본 depth)
+      center = self.guess_translation_rgb_only(mask=ob_mask, K=K, default_depth=0.5)
+    else:
+      center = self.guess_translation(depth=depth, mask=ob_mask, K=K)
 
     poses = torch.as_tensor(poses, device='cuda', dtype=torch.float)
     poses[:,:3,3] = torch.as_tensor(center.reshape(1,3), device='cuda')
@@ -211,12 +264,21 @@ class FoundationPose:
     add_errs = self.compute_add_err_to_gt_pose(poses)
     logging.info(f"after viewpoint, add_errs min:{add_errs.min()}")
 
-    xyz_map = depth2xyzmap(depth, K)
-    poses, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, xyz_map=xyz_map, glctx=self.glctx, mesh_diameter=self.diameter, iteration=iteration, get_vis=self.debug>=2)
+    if rgb_only_mode:
+      # RGB-only: 0으로 채운 depth와 xyz_map 사용
+      zero_depth = np.zeros((self.H, self.W), dtype=np.float32)
+      xyz_map = np.zeros((self.H, self.W, 3), dtype=np.float32)
+      poses, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=zero_depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, xyz_map=xyz_map, glctx=self.glctx, mesh_diameter=self.diameter, iteration=iteration, get_vis=self.debug>=2)
+    else:
+      xyz_map = depth2xyzmap(depth, K)
+      poses, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, xyz_map=xyz_map, glctx=self.glctx, mesh_diameter=self.diameter, iteration=iteration, get_vis=self.debug>=2)
     if vis is not None:
       imageio.imwrite(f'{self.debug_dir}/vis_refiner.png', vis)
 
-    scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2)
+    if rgb_only_mode:
+      scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=zero_depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=ob_mask)
+    else:
+      scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=ob_mask)
     if vis is not None:
       imageio.imwrite(f'{self.debug_dir}/vis_score.png', vis)
 
