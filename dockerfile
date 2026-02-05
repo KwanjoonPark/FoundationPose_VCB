@@ -31,6 +31,14 @@ RUN npm install -g @anthropic-ai/claude-code
 # 5. EGL 백엔드 설정 (headless offscreen 렌더링용)
 ENV PYOPENGL_PLATFORM=egl
 
+# 5-1. YOLOv8 (ultralytics) 설치
+RUN . /opt/conda/etc/profile.d/conda.sh && conda activate my && \
+    pip install ultralytics>=8.4.0
+
+# 5-2. Detectron2 설치 (Mask R-CNN용)
+RUN . /opt/conda/etc/profile.d/conda.sh && conda activate my && \
+    pip install 'git+https://github.com/facebookresearch/detectron2.git'
+
 # 6. Kaolin 재빌드 (sm_70 GPU 아키텍처 지원 - Quadro GV100 등)
 RUN . /opt/conda/etc/profile.d/conda.sh && conda activate my && \
     pip uninstall kaolin -y && \
@@ -45,46 +53,40 @@ WORKDIR /home/ebduser/FoundationPose
 # 7. 유틸리티 스크립트 생성
 
 # 7-1. LINEMOD 데이터셋 준비 스크립트 (mask_refined 심볼릭 링크 생성)
-RUN cat > /usr/local/bin/prepare_linemod.sh << 'SCRIPT_EOF'
-#!/bin/bash
-REF_VIEW_DIR="${1:-/home/ebduser/FoundationPose/linemod/ref_views}"
-if [ ! -d "$REF_VIEW_DIR" ]; then
-    echo "Error: Directory not found: $REF_VIEW_DIR"
-    echo "Usage: $0 [ref_view_dir]"
-    exit 1
-fi
-echo "Creating mask_refined symlinks in $REF_VIEW_DIR..."
-for dir in "$REF_VIEW_DIR"/ob_*/; do
-    if [ -d "${dir}mask" ] && [ ! -e "${dir}mask_refined" ]; then
-        ln -s "${dir}mask" "${dir}mask_refined"
-        echo "Created: ${dir}mask_refined"
-    fi
-done
-echo "Done!"
-SCRIPT_EOF
-RUN chmod +x /usr/local/bin/prepare_linemod.sh
+RUN printf '#!/bin/bash\n\
+REF_VIEW_DIR="${1:-/home/ebduser/FoundationPose/linemod/ref_views}"\n\
+if [ ! -d "$REF_VIEW_DIR" ]; then\n\
+    echo "Error: Directory not found: $REF_VIEW_DIR"\n\
+    echo "Usage: $0 [ref_view_dir]"\n\
+    exit 1\n\
+fi\n\
+echo "Creating mask_refined symlinks in $REF_VIEW_DIR..."\n\
+for dir in "$REF_VIEW_DIR"/ob_*/; do\n\
+    if [ -d "${dir}mask" ] && [ ! -e "${dir}mask_refined" ]; then\n\
+        ln -s "${dir}mask" "${dir}mask_refined"\n\
+        echo "Created: ${dir}mask_refined"\n\
+    fi\n\
+done\n\
+echo "Done!"' > /usr/local/bin/prepare_linemod.sh && chmod +x /usr/local/bin/prepare_linemod.sh
 
 # 7-2. 익스텐션 빌드 스크립트 (컨테이너 시작 후 최초 1회 실행)
-RUN cat > /usr/local/bin/setup_extensions.sh << 'SCRIPT_EOF'
-#!/bin/bash
-set -e
-FOUNDATIONPOSE_DIR="${1:-/home/ebduser/FoundationPose}"
-echo "=========================================="
-echo "FoundationPose Extensions Setup"
-echo "=========================================="
-source /opt/conda/etc/profile.d/conda.sh
-conda activate my
-# mycpp 빌드
-echo "[1/2] Building mycpp extension..."
-cd "$FOUNDATIONPOSE_DIR/mycpp"
-rm -rf build && mkdir build && cd build
-cmake .. && make -j$(nproc)
-# mycuda 빌드 (gridencoder 포함)
-echo "[2/2] Building mycuda extension..."
-cd "$FOUNDATIONPOSE_DIR/bundlesdf/mycuda"
-pip install -e .
-echo "=========================================="
-echo "All extensions built successfully!"
-echo "=========================================="
-SCRIPT_EOF
-RUN chmod +x /usr/local/bin/setup_extensions.sh
+RUN printf '#!/bin/bash\n\
+set -e\n\
+FOUNDATIONPOSE_DIR="${1:-/home/ebduser/FoundationPose}"\n\
+echo "=========================================="\n\
+echo "FoundationPose Extensions Setup"\n\
+echo "=========================================="\n\
+source /opt/conda/etc/profile.d/conda.sh\n\
+conda activate my\n\
+# mycpp 빌드\n\
+echo "[1/2] Building mycpp extension..."\n\
+cd "$FOUNDATIONPOSE_DIR/mycpp"\n\
+rm -rf build && mkdir build && cd build\n\
+cmake .. && make -j$(nproc)\n\
+# mycuda 빌드 (gridencoder 포함)\n\
+echo "[2/2] Building mycuda extension..."\n\
+cd "$FOUNDATIONPOSE_DIR/bundlesdf/mycuda"\n\
+pip install -e .\n\
+echo "=========================================="\n\
+echo "All extensions built successfully!"\n\
+echo "=========================================="' > /usr/local/bin/setup_extensions.sh && chmod +x /usr/local/bin/setup_extensions.sh
