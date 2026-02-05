@@ -32,10 +32,21 @@ def load_intrinsics(cam_file: str) -> np.ndarray:
     return np.array(K, dtype=np.float32)
 
 
-def test_with_dataset(server_ip: str, port: int, test_dir: str, num_frames: int = 10):
+def check_display_available() -> bool:
+    """디스플레이 사용 가능 여부 확인."""
+    import os
+    return os.environ.get('DISPLAY') is not None
+
+
+def test_with_dataset(server_ip: str, port: int, test_dir: str, num_frames: int = 10, show_vis: bool = True):
     """테스트 데이터셋으로 서버 테스트."""
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+
+    # Headless 환경 체크
+    if show_vis and not check_display_available():
+        logger.warning("No display available. Disabling visualization.")
+        show_vis = False
 
     test_dir = Path(test_dir)
     rgb_dir = test_dir / 'rgb'
@@ -116,12 +127,13 @@ def test_with_dataset(server_ip: str, port: int, test_dir: str, num_frames: int 
             logger.info(f"  Rotation: Roll={euler.get('roll',0):.2f}°, Pitch={euler.get('pitch',0):.2f}°, Yaw={euler.get('yaw',0):.2f}°")
             logger.info(f"  Latency: {result.get('latency_ms', 0):.1f}ms (total: {t_total*1000:.1f}ms)")
 
-            # 시각화
-            vis = visualize_result(color.copy(), result)
-            cv2.imshow('Result', vis)
-            key = cv2.waitKey(500)
-            if key == ord('q'):
-                break
+            # 시각화 (디스플레이 있을 때만)
+            if show_vis:
+                vis = visualize_result(color.copy(), result)
+                cv2.imshow('Result', vis)
+                key = cv2.waitKey(500)
+                if key == ord('q'):
+                    break
         else:
             logger.warning(f"Failed: {result.get('error', 'Unknown')}")
 
@@ -131,7 +143,8 @@ def test_with_dataset(server_ip: str, port: int, test_dir: str, num_frames: int 
     if success_count > 0:
         logger.info(f"Average latency: {total_latency/success_count:.1f}ms")
 
-    cv2.destroyAllWindows()
+    if show_vis:
+        cv2.destroyAllWindows()
     socket.close()
     context.term()
 
@@ -175,9 +188,12 @@ def main():
     parser.add_argument('--test_dir', type=str,
                         default='vcb/ref_views/test_scene')
     parser.add_argument('--num_frames', type=int, default=10)
+    parser.add_argument('--no_vis', action='store_true',
+                        help='Disable visualization')
     args = parser.parse_args()
 
-    test_with_dataset(args.server_ip, args.port, args.test_dir, args.num_frames)
+    test_with_dataset(args.server_ip, args.port, args.test_dir, args.num_frames,
+                      show_vis=not args.no_vis)
 
 
 if __name__ == '__main__':
