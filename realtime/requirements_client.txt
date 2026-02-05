@@ -1,0 +1,13 @@
+# Requirements for client.py (Local PC)
+# Install with: pip install -r requirements_client.txt
+
+pyzmq>=25.0.0
+opencv-python>=4.5.0
+numpy>=1.20.0
+
+# Optional: RealSense camera support
+# pyrealsense2>=2.50.0
+
+# Optional: ROS integration
+# rospkg
+# catkin_pkg
