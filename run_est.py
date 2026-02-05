@@ -63,6 +63,7 @@ class PoseConfig:
     min_n_views: int = 40
     inplane_step: int = 60
     input_mode: str = 'rgb'  # 'rgb' or 'rgbd'
+    use_mask_iou: bool = True  # Use mask IoU bonus in scoring
 
 
 @dataclass
@@ -113,6 +114,7 @@ class EstimationConfig:
                 min_n_views=args.min_n_views,
                 inplane_step=args.inplane_step,
                 input_mode=args.input_mode,
+                use_mask_iou=args.use_mask_iou,
             ),
             mask=MaskConfig(
                 model_path=args.mask_model,
@@ -467,9 +469,10 @@ class PoseEstimationPipeline:
             glctx=dr.RasterizeCudaContext(),
             min_n_views=self.config.pose.min_n_views,
             inplane_step=self.config.pose.inplane_step,
-            front_hemisphere_only=self.config.pose.fix_z_axis
+            front_hemisphere_only=self.config.pose.fix_z_axis,
+            use_mask_iou=self.config.pose.use_mask_iou
         )
-        logging.info(f"FoundationPose 초기화 완료 (front_hemisphere_only={self.config.pose.fix_z_axis})")
+        logging.info(f"FoundationPose 초기화 완료 (front_hemisphere_only={self.config.pose.fix_z_axis}, use_mask_iou={self.config.pose.use_mask_iou})")
 
         # 데이터 리더 초기화
         self.reader = YcbineoatReader(
@@ -698,7 +701,7 @@ def parse_args() -> argparse.Namespace:
     pose.add_argument('--symmetry', type=str, default='z180',
         choices=['none', 'z', 'z180', 'x', 'x180', 'y', 'y180', 'xy', 'xz', 'yz', 'xyz'])
     pose.add_argument('--symmetry_step', type=float, default=5.0)
-    pose.add_argument('--fix_z_axis', type=bool, default=True,
+    pose.add_argument('--fix_z_axis', type=lambda x: x.lower() == 'true', default=True,
         help='Filter back-facing poses (front hemisphere only)')
     pose.add_argument('--min_n_views', type=int, default=40,
         help='Number of viewpoints for pose hypothesis (default: 40)')
@@ -706,6 +709,8 @@ def parse_args() -> argparse.Namespace:
         help='In-plane rotation step in degrees (default: 60)')
     pose.add_argument('--input_mode', type=str, default='rgb',
         choices=['rgb', 'rgbd'], help='Input mode: rgb (RGB only) or rgbd (RGB + Depth)')
+    pose.add_argument('--use_mask_iou', type=lambda x: x.lower() == 'true', default=True,
+        help='Use mask IoU bonus in scoring')
 
     # Mask 설정
     mask = parser.add_argument_group('Mask Generation')

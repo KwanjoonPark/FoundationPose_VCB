@@ -16,12 +16,13 @@ import yaml
 
 
 class FoundationPose:
-  def __init__(self, model_pts, model_normals, symmetry_tfs=None, mesh=None, scorer:ScorePredictor=None, refiner:PoseRefinePredictor=None, glctx=None, debug=0, debug_dir='/home/bowen/debug/novel_pose_debug/', min_n_views=40, inplane_step=60, front_hemisphere_only=False):
+  def __init__(self, model_pts, model_normals, symmetry_tfs=None, mesh=None, scorer:ScorePredictor=None, refiner:PoseRefinePredictor=None, glctx=None, debug=0, debug_dir='/home/bowen/debug/novel_pose_debug/', min_n_views=40, inplane_step=60, front_hemisphere_only=False, use_mask_iou=True):
     self.gt_pose = None
     self.ignore_normal_flip = True
     self.debug = debug
     self.debug_dir = debug_dir
     self.front_hemisphere_only = front_hemisphere_only
+    self.use_mask_iou = use_mask_iou
     os.makedirs(debug_dir, exist_ok=True)
 
     self.reset_object(model_pts, model_normals, symmetry_tfs=symmetry_tfs, mesh=mesh)
@@ -275,10 +276,12 @@ class FoundationPose:
     if vis is not None:
       imageio.imwrite(f'{self.debug_dir}/vis_refiner.png', vis)
 
+    # Pass mask to scorer only if use_mask_iou is enabled
+    scorer_mask = ob_mask if self.use_mask_iou else None
     if rgb_only_mode:
-      scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=zero_depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=ob_mask)
+      scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=zero_depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=scorer_mask)
     else:
-      scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=ob_mask)
+      scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=scorer_mask)
     if vis is not None:
       imageio.imwrite(f'{self.debug_dir}/vis_score.png', vis)
 
