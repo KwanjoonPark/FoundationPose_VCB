@@ -162,27 +162,112 @@ pip install pyrealsense2
 - JPEG 품질/해상도 낮추기
 - 서버와 같은 로컬 네트워크 사용
 
-## Integration with ROS
+## ROS Integration
 
-ROS에서 사용하려면 `client.py`의 결과를 ROS 토픽으로 발행:
+### ROS 패키지 설정
+
+```bash
+# catkin workspace에 심볼릭 링크 생성
+cd ~/catkin_ws/src
+ln -s /path/to/FoundationPose/realtime foundation_pose
+
+# 빌드
+cd ~/catkin_ws
+catkin_make
+source devel/setup.bash
+```
+
+### ROS 노드 실행
+
+**방법 1: rosrun**
+```bash
+# GPU 서버에서 server.py 실행 후
+rosrun foundation_pose ros_client.py _server_ip:=<GPU_SERVER_IP> _port:=5555
+```
+
+**방법 2: roslaunch**
+```bash
+# RealSense와 함께 실행
+roslaunch foundation_pose foundation_pose.launch \
+    server_ip:=<GPU_SERVER_IP> \
+    launch_realsense:=true
+
+# RealSense 별도 실행 시
+roslaunch realsense2_camera rs_camera.launch align_depth:=true
+roslaunch foundation_pose foundation_pose.launch server_ip:=<GPU_SERVER_IP>
+```
+
+### ROS Topics
+
+**Subscribed (입력):**
+| Topic | Type | Description |
+|-------|------|-------------|
+| `/camera/color/image_raw` | sensor_msgs/Image | RGB 이미지 |
+| `/camera/aligned_depth_to_color/image_raw` | sensor_msgs/Image | Depth (optional) |
+| `/camera/color/camera_info` | sensor_msgs/CameraInfo | 카메라 정보 |
+
+**Published (출력):**
+| Topic | Type | Description |
+|-------|------|-------------|
+| `/foundation_pose/pose` | geometry_msgs/PoseStamped | 6DoF Pose |
+| `/foundation_pose/pose_array` | geometry_msgs/PoseArray | RViz 시각화용 |
+| `/foundation_pose/visualization` | sensor_msgs/Image | 결과 오버레이 이미지 |
+| `/foundation_pose/status` | std_msgs/String | 상태 메시지 |
+
+**TF Broadcast:**
+- `camera_color_optical_frame` → `object`
+
+### ROS Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `~server_ip` | localhost | GPU 서버 IP |
+| `~port` | 5555 | ZeroMQ 포트 |
+| `~rate_limit` | 10.0 | 최대 처리 속도 (Hz) |
+| `~jpeg_quality` | 80 | JPEG 압축 품질 |
+| `~publish_tf` | true | TF 발행 여부 |
+| `~frame_id` | camera_color_optical_frame | 카메라 프레임 |
+| `~object_frame_id` | object | 객체 프레임 |
+
+### RViz에서 확인
+
+```bash
+# RViz 실행
+rviz
+
+# 추가할 Display:
+# 1. TF - object 프레임 확인
+# 2. PoseArray - /foundation_pose/pose_array
+# 3. Image - /foundation_pose/visualization
+```
+
+### 로봇 제어 예시
 
 ```python
+#!/usr/bin/env python3
 import rospy
 from geometry_msgs.msg import PoseStamped
 
-# client.send_frame() 호출 후
-if result.get('success'):
-    pose_msg = PoseStamped()
-    pose_msg.header.stamp = rospy.Time.now()
-    pose_msg.header.frame_id = 'camera_link'
+class RobotController:
+    def __init__(self):
+        rospy.init_node('robot_controller')
+        rospy.Subscriber('/foundation_pose/pose', PoseStamped, self.pose_callback)
 
-    trans = result['translation']
-    pose_msg.pose.position.x = trans[0]
-    pose_msg.pose.position.y = trans[1]
-    pose_msg.pose.position.z = trans[2]
+    def pose_callback(self, msg):
+        # 객체 위치
+        x = msg.pose.position.x
+        y = msg.pose.position.y
+        z = msg.pose.position.z
 
-    # rotation은 quaternion으로 변환 필요
-    pose_pub.publish(pose_msg)
+        # 로봇 제어 로직
+        rospy.loginfo(f"Object at: ({x:.3f}, {y:.3f}, {z:.3f})")
+
+        # 예: MoveIt으로 이동
+        # self.move_to_pose(msg.pose)
+
+if __name__ == '__main__':
+    controller = RobotController()
+    rospy.spin()
 ```
 
 ## API Reference
