@@ -15,7 +15,13 @@ from torch.utils.cpp_extension import load
 code_dir = os.path.dirname(os.path.realpath(__file__))
 
 
-nvcc_flags = ['-Xcompiler', '-O3', '-std=c++14', '-U__CUDA_NO_HALF_OPERATORS__', '-U__CUDA_NO_HALF_CONVERSIONS__', '-U__CUDA_NO_HALF2_OPERATORS__', '-gencode=arch=compute_70,code=sm_70']
+# Auto-detect CUDA arch from TORCH_CUDA_ARCH_LIST env var (e.g. "8.7" for Jetson Orin)
+# Falls back to sm_70 for x86 compatibility
+_cuda_arch = os.environ.get('TORCH_CUDA_ARCH_LIST', '7.0')
+_major, _minor = _cuda_arch.replace(' ', '').split('+')[0].split(';')[0].split('.')[:2]
+_arch_flag = f'-gencode=arch=compute_{_major}{_minor},code=sm_{_major}{_minor}'
+
+nvcc_flags = ['-Xcompiler', '-O3', '-std=c++14', '-U__CUDA_NO_HALF_OPERATORS__', '-U__CUDA_NO_HALF_CONVERSIONS__', '-U__CUDA_NO_HALF2_OPERATORS__', _arch_flag]
 c_flags = ['-O3', '-std=c++14']
 
 setup(

@@ -1,0 +1,127 @@
+# Jetson AGX Orin Dockerfile for FoundationPose_VCB
+# Base: L4T R35.2.1 with PyTorch 2.0 and Python 3.8
+# Supports model-based pose estimation with Mask R-CNN segmentation
+# Build time: ~2-3.5 hours on Jetson AGX Orin
+# Disk: ~20-25GB during build, ~12-15GB final image
+
+FROM nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
+
+ENV TZ=US/Pacific
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# Stage 1: System dependencies
+RUN apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends \
+        build-essential cmake g++ gfortran checkinstall \
+        libgtk2.0-dev libjpeg8-dev libtiff5-dev pkg-config yasm \
+        libavcodec-dev libavformat-dev libswscale-dev \
+        libdc1394-22-dev libxine2-dev libv4l-dev \
+        libtbb-dev libatlas-base-dev \
+        libfaac-dev libmp3lame-dev libtheora-dev libvorbis-dev libxvidcore-dev \
+        libopencore-amrnb-dev libopencore-amrwb-dev x264 v4l-utils \
+        libprotobuf-dev protobuf-compiler \
+        libgoogle-glog-dev libgflags-dev libgphoto2-dev \
+        libhdf5-dev libflann-dev libboost-all-dev \
+        libyaml-cpp-dev \
+        libzmq3-dev \
+        freeglut3-dev \
+        libproj-dev proj-data \
+        wget bzip2 ca-certificates curl git vim tmux \
+        doxygen cmake-curses-gui && \
+    rm -rf /var/lib/apt/lists/*
+
+# Stage 2: Build Eigen 3.4.0 from source
+RUN cd / && wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz && \
+    tar xvzf ./eigen-3.4.0.tar.gz && \
+    cd eigen-3.4.0 && \
+    mkdir build && cd build && \
+    cmake .. && make install && \
+    cd / && rm -rf eigen-3.4.0 eigen-3.4.0.tar.gz
+
+# Stage 3: Build pybind11 v2.10.0 from source
+RUN cd / && git clone https://github.com/pybind/pybind11 && \
+    cd pybind11 && git checkout v2.10.0 && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DPYBIND11_INSTALL=ON -DPYBIND11_TEST=OFF && \
+    make -j$(nproc) && make install && \
+    cd / && rm -rf pybind11
+
+# h5py: base image has OpenMPI HDF5 headers which need mpi.h;
+# install serial variant instead to avoid the MPI dependency
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libhdf5-serial-dev && \
+    rm -rf /var/lib/apt/lists/*
+ENV HDF5_DIR=/usr/lib/aarch64-linux-gnu/hdf5/serial
+
+# Stage 4: pip install Python packages
+# torch, torchvision, torchaudio already in base image
+# Skip: ultralytics (no YOLO), kaolin/warp-lang/objaverse (no NeRF)
+# Skip: jupyterlab, pybullet, py-spy, g4f, nodejs, etc.
+RUN pip3 install --no-cache-dir \
+    scipy scikit-learn scikit-image \
+    trimesh open3d \
+    kornia einops timm roma omegaconf "huggingface_hub<0.27" \
+    h5py pyyaml ruamel.yaml \
+    transformations joblib pandas matplotlib tqdm imageio \
+    pybind11 ninja \
+    "pyzmq==25.1.2" numba \
+    fvcore pycocotools psutil \
+    pyrender PyOpenGL PyOpenGL_accelerate
+
+# Upgrade typing_extensions (base image 4.4.0 is too old for dash/open3d)
+RUN pip3 install --no-cache-dir "typing_extensions>=4.6"
+
+# Stage 5: Build nvdiffrast from source (Orin = sm_87)
+RUN TORCH_CUDA_ARCH_LIST="8.7" FORCE_CUDA=1 \
+    pip3 install --no-cache-dir git+https://github.com/NVlabs/nvdiffrast.git
+
+# Stage 6: Build PyTorch3D from source (~60-90 min on Jetson)
+RUN TORCH_CUDA_ARCH_LIST="8.7" FORCE_CUDA=1 \
+    pip3 install --no-cache-dir "git+https://github.com/facebookresearch/pytorch3d.git@stable"
+
+# Stage 7: Build Detectron2 from source (Mask R-CNN)
+RUN TORCH_CUDA_ARCH_LIST="8.7" \
+    pip3 install --no-cache-dir 'git+https://github.com/facebookresearch/detectron2.git'
+
+# Stage 8: Install ROS Noetic (matching host Jetson setup)
+# Apt source: http://packages.ros.org/ros/ubuntu focal main (same as host)
+# Using ros-noetic-ros-base (not desktop-full) — no rviz/Gazebo needed
+# cv_bridge excluded here (its libopencv-dev dep conflicts with L4T's OpenCV)
+# RealSense camera node runs on host; container accesses topics via --network=host
+RUN sh -c 'echo "deb http://packages.ros.org/ros/ubuntu focal main" > /etc/apt/sources.list.d/ros-latest.list' && \
+    curl -s https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add - && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ros-noetic-ros-base \
+        ros-noetic-tf2-ros \
+        python3-rosdep python3-rosinstall python3-rosinstall-generator python3-wstool && \
+    rm -rf /var/lib/apt/lists/*
+
+# Stage 8b: Build cv_bridge from source against L4T's existing OpenCV
+# (avoids the libopencv-dev conflict from apt)
+RUN . /opt/ros/noetic/setup.sh && \
+    mkdir -p /tmp/cv_bridge_ws/src && \
+    cd /tmp/cv_bridge_ws/src && \
+    git clone -b noetic https://github.com/ros-perception/vision_opencv.git && \
+    cd /tmp/cv_bridge_ws && \
+    catkin_make_isolated --install --install-space /opt/ros/noetic \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DPYTHON_EXECUTABLE=/usr/bin/python3 \
+        --only-pkg-with-deps cv_bridge && \
+    rm -rf /tmp/cv_bridge_ws
+
+# Source ROS on every bash session + preload scikit-learn's libgomp (Jetson TLS fix)
+RUN echo "source /opt/ros/noetic/setup.bash" >> /etc/bash.bashrc && \
+    echo 'export LD_PRELOAD="/lib/aarch64-linux-gnu/libGLdispatch.so.0 $(find /usr/local/lib -name "libgomp-*.so*" -path "*/scikit_learn*" 2>/dev/null | head -1)"' >> /etc/bash.bashrc
+
+# Stage 9: Environment variables
+ENV OPENCV_IO_ENABLE_OPENEXR=1
+ENV PYOPENGL_PLATFORM=egl
+ENV TORCH_CUDA_ARCH_LIST="8.7"
+ENV SHELL=/bin/bash
+# Fix Jetson static TLS block errors for libGLdispatch (open3d) and libgomp (scikit-learn)
+ENV LD_PRELOAD=/lib/aarch64-linux-gnu/libGLdispatch.so.0
+RUN ln -sf /bin/bash /bin/sh
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+WORKDIR /workspace
