@@ -41,6 +41,7 @@ class FoundationPose:
       self.refiner = PoseRefinePredictor()
 
     self.pose_last = None   # Used for tracking; per the centered mesh
+    self._debug_frame_count = 0
 
 
   def reset_object(self, model_pts, model_normals, symmetry_tfs=None, mesh=None):
@@ -274,7 +275,9 @@ class FoundationPose:
       xyz_map = depth2xyzmap(depth, K)
       poses, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, xyz_map=xyz_map, glctx=self.glctx, mesh_diameter=self.diameter, iteration=iteration, get_vis=self.debug>=2)
     if vis is not None:
-      imageio.imwrite(f'{self.debug_dir}/vis_refiner.png', vis)
+      refiner_dir = f'{self.debug_dir}/vis_refiner'
+      os.makedirs(refiner_dir, exist_ok=True)
+      imageio.imwrite(f'{refiner_dir}/vis_refiner_{self._debug_frame_count:06d}.png', vis)
 
     # Pass mask to scorer only if use_mask_iou is enabled
     scorer_mask = ob_mask if self.use_mask_iou else None
@@ -283,7 +286,11 @@ class FoundationPose:
     else:
       scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=scorer_mask)
     if vis is not None:
-      imageio.imwrite(f'{self.debug_dir}/vis_score.png', vis)
+      score_dir = f'{self.debug_dir}/vis_score'
+      os.makedirs(score_dir, exist_ok=True)
+      imageio.imwrite(f'{score_dir}/vis_score_{self._debug_frame_count:06d}.png', vis)
+
+    self._debug_frame_count += 1
 
     add_errs = self.compute_add_err_to_gt_pose(poses)
     logging.info(f"final, add_errs min:{add_errs.min()}")
