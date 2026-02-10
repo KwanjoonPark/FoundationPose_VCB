@@ -725,7 +725,7 @@ def draw_posed_3d_box(K, img, ob_in_cam, bbox, line_color=(0,255,0), linewidth=2
     pts = (ob_in_cam@to_homo(pts).T).T[:,:3]   #(2,3)
     projected = (K@pts.T).T
     uv = np.round(projected[:,:2]/projected[:,2].reshape(-1,1)).astype(int)   #(2,2)
-    img = cv2.line(img, uv[0].tolist(), uv[1].tolist(), color=line_color, thickness=linewidth, lineType=cv2.LINE_AA)
+    img = cv2.line(img, tuple(uv[0].tolist()), tuple(uv[1].tolist()), color=line_color, thickness=linewidth, lineType=cv2.LINE_AA)
     return img
 
   for y in [ymin,ymax]:
