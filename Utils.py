@@ -130,7 +130,7 @@ def make_mesh_tensors(mesh, device='cuda', max_tex_size=None):
   return mesh_tensors
 
 
-def nvdiffrast_render(K=None, H=None, W=None, ob_in_cams=None, glctx=None, context='cuda', get_normal=False, mesh_tensors=None, mesh=None, projection_mat=None, bbox2d=None, output_size=None, use_light=False, light_color=None, light_dir=np.array([0,0,1]), light_pos=np.array([0,0,0]), w_ambient=0.8, w_diffuse=0.5, extra={}):
+def nvdiffrast_render(K=None, H=None, W=None, ob_in_cams=None, glctx=None, context='cuda', get_normal=False, mesh_tensors=None, mesh=None, projection_mat=None, bbox2d=None, output_size=None, use_light=False, light_color=None, light_dir=np.array([0,0,1]), light_pos=np.array([0,0,0]), w_ambient=0.8, w_diffuse=0.5, w_specular=0.0, shininess=32.0, multi_light=False, extra={}):
   '''Just plain rendering, not support any gradient
   @K: (3,3) np array
   @ob_in_cams: (N,4,4) torch tensor, openCV camera
@@ -158,7 +158,7 @@ def nvdiffrast_render(K=None, H=None, W=None, ob_in_cams=None, glctx=None, conte
 
   ob_in_glcams = torch.tensor(glcam_in_cvcam, device='cuda', dtype=torch.float)[None]@ob_in_cams
   if projection_mat is None:
-    projection_mat = projection_matrix_from_intrinsics(K, height=H, width=W, znear=0.001, zfar=100)
+    projection_mat = projection_matrix_from_intrinsics(K, height=H, width=W, znear=0.01, zfar=5.0)
   projection_mat = torch.as_tensor(projection_mat.reshape(-1,4,4), device='cuda', dtype=torch.float)
   mtx = projection_mat@ob_in_glcams
 
@@ -199,17 +199,48 @@ def nvdiffrast_render(K=None, H=None, W=None, ob_in_cams=None, glctx=None, conte
     normal_map = None
 
   if use_light:
-    if light_dir is not None:
-      light_dir_neg = -torch.as_tensor(light_dir, dtype=torch.float, device='cuda')
+    if multi_light:
+      light_dirs = [
+        np.array([0,0,1]), np.array([0,0,-1]),
+        np.array([1,0,0]), np.array([-1,0,0]),
+        np.array([0,1,0]), np.array([0,-1,0]),
+      ]
     else:
-      light_dir_neg = torch.as_tensor(light_pos, dtype=torch.float, device='cuda').reshape(1,1,3) - pts_cam
-    diffuse_intensity = (F.normalize(vnormals_cam, dim=-1) * F.normalize(light_dir_neg, dim=-1)).sum(dim=-1).clip(0, 1)[...,None]
-    diffuse_intensity_map, _ = dr.interpolate(diffuse_intensity, rast_out, pos_idx)  # (N_pose, H, W, 1)
+      light_dirs = [light_dir if light_dir is not None else None]
+
+    normals_n = F.normalize(vnormals_cam, dim=-1)
+    total_diffuse = torch.zeros_like(vnormals_cam[..., :1])
+    total_specular = torch.zeros_like(vnormals_cam[..., :1])
+
+    for ld in light_dirs:
+      if ld is not None:
+        light_dir_neg = -torch.as_tensor(ld, dtype=torch.float, device='cuda')
+      else:
+        light_dir_neg = torch.as_tensor(light_pos, dtype=torch.float, device='cuda').reshape(1,1,3) - pts_cam
+      l_n = F.normalize(light_dir_neg, dim=-1)
+      diff = (normals_n * l_n).sum(dim=-1).clip(0, 1)[..., None]
+      total_diffuse = total_diffuse + diff
+
+      if w_specular > 0:
+        view_dir = F.normalize(-pts_cam, dim=-1)
+        half_vec = F.normalize(l_n + view_dir, dim=-1)
+        spec = (normals_n * half_vec).sum(dim=-1).clip(0, 1).pow(shininess)[..., None]
+        total_specular = total_specular + spec
+
+    if multi_light:
+      total_diffuse = total_diffuse / len(light_dirs)
+      total_specular = total_specular / len(light_dirs)
+
+    diffuse_map, _ = dr.interpolate(total_diffuse, rast_out, pos_idx)
     if light_color is None:
       light_color = color
     else:
       light_color = torch.as_tensor(light_color, device='cuda', dtype=torch.float)
-    color = color*w_ambient + diffuse_intensity_map*light_color*w_diffuse
+    color = color * w_ambient + diffuse_map * light_color * w_diffuse
+
+    if w_specular > 0:
+      specular_map, _ = dr.interpolate(total_specular, rast_out, pos_idx)
+      color = color + specular_map * w_specular
 
   color = color.clip(0,1)
   color = color * torch.clamp(rast_out[..., -1:], 0, 1) # Mask out background using alpha

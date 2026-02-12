@@ -499,12 +499,45 @@ class PoseEstimationPipeline:
         self.visualizer = PoseVisualizer(self.reader.K, self.bbox, self.extents)
 
     def _load_mesh(self):
-        """Mesh 파일 로드 및 스케일 적용."""
+        """Mesh 파일 로드 및 스케일 적용.
+
+        Multi-material OBJ의 경우 각 재질의 Kd 색상을 vertex color로 변환하여
+        단일 mesh로 병합합니다.
+        """
         import trimesh
 
         mesh = trimesh.load(self.config.mesh.file_path)
         if isinstance(mesh, trimesh.Scene):
+            # Multi-material OBJ: Kd 색상을 vertex color로 변환 후 병합
+            for geom in mesh.geometry.values():
+                if isinstance(geom.visual, trimesh.visual.texture.TextureVisuals):
+                    mat = geom.visual.material
+                    if hasattr(mat, 'diffuse') and mat.diffuse is not None:
+                        diffuse = mat.diffuse[:3]
+                        rgba = np.tile(
+                            np.append(diffuse, 255).astype(np.uint8),
+                            (len(geom.vertices), 1),
+                        )
+                        geom.visual = trimesh.visual.ColorVisuals(vertex_colors=rgba)
+                # Fusion 360 export 시 뒤집힌 face normal 수정
+                trimesh.repair.fix_normals(geom)
             mesh = mesh.dump(concatenate=True)
+        else:
+            trimesh.repair.fix_normals(mesh)
+
+        # Face winding order 통일 및 메시 유효성 검증
+        mesh.process(validate=True)
+
+        # Unindex: 각 면이 고유 버텍스를 갖도록 분리
+        # → 공유 버텍스의 노멀 평균화 방지, 경계면 색상 그라데이션 제거
+        original_vc = np.array(mesh.visual.vertex_colors)  # (V, 4)
+        new_verts = mesh.vertices[mesh.faces.flatten()]
+        new_colors = original_vc[mesh.faces.flatten()]
+        new_faces = np.arange(len(mesh.faces) * 3).reshape(-1, 3)
+        mesh = trimesh.Trimesh(
+            vertices=new_verts, faces=new_faces, process=False
+        )
+        mesh.visual.vertex_colors = new_colors
 
         if self.config.mesh.scale != 1.0:
             mesh.apply_scale(self.config.mesh.scale)
@@ -714,7 +747,7 @@ def parse_args() -> argparse.Namespace:
 
     # Mask 설정
     mask = parser.add_argument_group('Mask Generation')
-    mask.add_argument('--mask_model', type=str, required=True)
+    mask.add_argument('--mask_model', type=str, default='vcb/rcnn500.pth')
     mask.add_argument('--mask_type', type=str, default='maskrcnn', choices=['yolo', 'maskrcnn'])
     mask.add_argument('--mask_conf', type=float, default=0.5)
     mask.add_argument('--mask_config', type=str, default=None)
@@ -726,7 +759,7 @@ def parse_args() -> argparse.Namespace:
     # Debug 설정
     debug = parser.add_argument_group('Debug')
     debug.add_argument('--debug', type=int, default=2)
-    debug.add_argument('--debug_dir', type=str, default=f'{code_dir}/vcb/debug/rcnn')
+    debug.add_argument('--debug_dir', type=str, default=f'{code_dir}/vcb/debug/newply')
 
     return parser.parse_args()
 
