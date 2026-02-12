@@ -30,6 +30,7 @@ _PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
 sys.path.insert(0, _PROJECT_ROOT)
 
 import argparse
+import json
 import logging
 import time
 import threading
@@ -41,6 +42,7 @@ import numpy as np
 import rospy
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import String
 from cv_bridge import CvBridge, CvBridgeError
 
 # FoundationPose imports
@@ -203,6 +205,7 @@ class RealtimePoseEstimator:
 
         # Pose 상태
         self.last_pose = None
+        self.last_confidence = 0.0
         self.is_tracking = False
         self.pose_count = 0
 
@@ -223,9 +226,12 @@ class RealtimePoseEstimator:
         self._install_hooks()
         logging.info("초기화 완료!")
 
-        # ROS Publisher
+        # ROS Publishers
         self.pose_pub = rospy.Publisher(
             '/foundation_pose/pose', PoseStamped, queue_size=1
+        )
+        self.result_pub = rospy.Publisher(
+            '/foundation_pose/result', String, queue_size=1
         )
 
         # ROS Subscribers
@@ -293,11 +299,18 @@ class RealtimePoseEstimator:
             return result
         self.estimator.refiner.predict = _hooked_refiner
 
-        # Scorer 훅
+        # Scorer 훅 (confidence 캡처 포함)
         _orig_scorer = self.estimator.scorer.predict
+        _self = self
         def _hooked_scorer(*a, **kw):
-            self.status.set(StatusMonitor.SCORING)
+            _self.status.set(StatusMonitor.SCORING)
             result = _orig_scorer(*a, **kw)
+            # result = (scores_tensor, vis_canvas or None)
+            try:
+                scores = result[0]
+                _self.last_confidence = float(scores.max().cpu())
+            except Exception:
+                pass
             return result
         self.estimator.scorer.predict = _hooked_scorer
 
@@ -411,6 +424,7 @@ class RealtimePoseEstimator:
         if mask is None:
             logging.warning("R-CNN: 객체를 찾을 수 없습니다!")
             self.status.set(StatusMonitor.MASK_FAIL)
+            self._publish_result_json(object_found=False)
             return
 
         # 마스크 팽창
@@ -450,6 +464,7 @@ class RealtimePoseEstimator:
 
         # ROS 발행
         self._publish_pose(pose)
+        self._publish_result_json(object_found=True, pose=pose)
 
         # 시각화 프레임 생성
         self.vis_frame = self._make_vis(rgb, pose, mask)
@@ -485,6 +500,55 @@ class RealtimePoseEstimator:
         msg.pose.orientation.z = quat[2]
         msg.pose.orientation.w = quat[3]
         self.pose_pub.publish(msg)
+
+    def _publish_result_json(self, object_found, pose=None):
+        """JSON 형태로 추정 결과를 ROS topic에 발행."""
+        from scipy.spatial.transform import Rotation as R
+
+        result = {
+            "object_found": object_found,
+            "error": not object_found,
+            "timestamp": rospy.Time.now().to_sec(),
+        }
+
+        if object_found and pose is not None:
+            trans = pose[:3, 3]
+            quat = R.from_matrix(pose[:3, :3]).as_quat()  # [x, y, z, w]
+            pitch, yaw, roll = RotationUtils.to_euler(pose[:3, :3])
+            pitch = RotationUtils.normalize_angle(-pitch)
+            yaw = RotationUtils.normalize_angle(-yaw)
+            roll = RotationUtils.normalize_angle(roll)
+
+            result["pose_6d"] = {
+                "translation": {
+                    "x": round(float(trans[0]), 6),
+                    "y": round(float(trans[1]), 6),
+                    "z": round(float(trans[2]), 6),
+                },
+                "rotation_euler_deg": {
+                    "roll": round(float(roll), 2),
+                    "pitch": round(float(pitch), 2),
+                    "yaw": round(float(yaw), 2),
+                },
+                "rotation_quaternion": {
+                    "x": round(float(quat[0]), 6),
+                    "y": round(float(quat[1]), 6),
+                    "z": round(float(quat[2]), 6),
+                    "w": round(float(quat[3]), 6),
+                },
+            }
+            # raw score = logit + 100(오프셋) + IoU보너스(0~10)
+            # → 100을 빼서 logit 복원 후 sigmoid로 0~1 정규화
+            raw = self.last_confidence - 100.0
+            confidence = 1.0 / (1.0 + np.exp(-raw))
+            result["confidence"] = round(float(confidence), 4)
+        else:
+            result["pose_6d"] = None
+            result["confidence"] = 0.0
+
+        msg = String()
+        msg.data = json.dumps(result)
+        self.result_pub.publish(msg)
 
     # ----- 시각화 -----
 
