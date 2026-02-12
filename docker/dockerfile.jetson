@@ -124,4 +124,10 @@ ENV LD_PRELOAD=/lib/aarch64-linux-gnu/libGLdispatch.so.0
 RUN ln -sf /bin/bash /bin/sh
 RUN ln -sf /usr/bin/python3 /usr/bin/python
 
+# Claude Code CLI
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    rm -rf /var/lib/apt/lists/* && \
+    npm install -g @anthropic-ai/claude-code
+
 WORKDIR /workspace

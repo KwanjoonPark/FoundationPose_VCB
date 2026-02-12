@@ -58,3 +58,8 @@ RUN conda activate my &&\
 
 ENV SHELL=/bin/bash
 RUN ln -sf /bin/bash /bin/sh
+
+# Claude Code CLI
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g @anthropic-ai/claude-code

@@ -42,6 +42,9 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+vcb/debug/
+vcb/ref_views/test_scene
+CLAUDE.md
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
