@@ -427,6 +427,9 @@ class RealtimePoseEstimator:
             self._publish_result_json(object_found=False)
             return
 
+        mask_conf = mask_info.get('confidence', None)
+        logging.info(f"Mask R-CNN confidence: {mask_conf:.4f}" if mask_conf is not None else "Mask confidence: N/A")
+
         # 마스크 팽창
         if self.args.mask_dilate > 0:
             kernel = np.ones(
@@ -780,7 +783,7 @@ def parse_args():
         default=f'{code_dir}/vcb/rcnn500.pth')
     parser.add_argument('--mask_type', type=str, default='maskrcnn',
         choices=['yolo', 'maskrcnn'])
-    parser.add_argument('--mask_conf', type=float, default=0.5)
+    parser.add_argument('--mask_conf', type=float, default=0.9)
     parser.add_argument('--mask_dilate', type=int, default=0)
 
     # Pose
