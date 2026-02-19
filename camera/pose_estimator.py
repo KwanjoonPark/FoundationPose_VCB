@@ -280,6 +280,7 @@ class RealtimePoseEstimator:
             inplane_step=self.args.inplane_step,
             front_hemisphere_only=self.args.fix_z_axis,
             use_mask_iou=self.args.use_mask_iou,
+            use_light=self.args.use_light,
         )
 
         self.mask_generator = create_mask_generator(
@@ -797,6 +798,8 @@ def parse_args():
     parser.add_argument('--inplane_step', type=int, default=60)
     parser.add_argument('--est_refine_iter', type=int, default=5)
     parser.add_argument('--track_refine_iter', type=int, default=2)
+    parser.add_argument('--use_light', type=lambda x: x.lower() == 'true', default=True,
+        help='Use Phong shading (True) or constant shading (False)')
 
     # 저장
     parser.add_argument('--save_dir', type=str,

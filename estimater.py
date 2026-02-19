@@ -16,13 +16,14 @@ import yaml
 
 
 class FoundationPose:
-  def __init__(self, model_pts, model_normals, symmetry_tfs=None, mesh=None, scorer:ScorePredictor=None, refiner:PoseRefinePredictor=None, glctx=None, debug=0, debug_dir='/home/bowen/debug/novel_pose_debug/', min_n_views=40, inplane_step=60, front_hemisphere_only=False, use_mask_iou=True):
+  def __init__(self, model_pts, model_normals, symmetry_tfs=None, mesh=None, scorer:ScorePredictor=None, refiner:PoseRefinePredictor=None, glctx=None, debug=0, debug_dir='/home/bowen/debug/novel_pose_debug/', min_n_views=40, inplane_step=60, front_hemisphere_only=False, use_mask_iou=True, use_light=True):
     self.gt_pose = None
     self.ignore_normal_flip = True
     self.debug = debug
     self.debug_dir = debug_dir
     self.front_hemisphere_only = front_hemisphere_only
     self.use_mask_iou = use_mask_iou
+    self.use_light = use_light
     os.makedirs(debug_dir, exist_ok=True)
 
     self.reset_object(model_pts, model_normals, symmetry_tfs=symmetry_tfs, mesh=mesh)
@@ -270,10 +271,10 @@ class FoundationPose:
       # RGB-only: 0으로 채운 depth와 xyz_map 사용
       zero_depth = np.zeros((self.H, self.W), dtype=np.float32)
       xyz_map = np.zeros((self.H, self.W, 3), dtype=np.float32)
-      poses, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=zero_depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, xyz_map=xyz_map, glctx=self.glctx, mesh_diameter=self.diameter, iteration=iteration, get_vis=self.debug>=2)
+      poses, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=zero_depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, xyz_map=xyz_map, glctx=self.glctx, mesh_diameter=self.diameter, iteration=iteration, get_vis=self.debug>=2, use_light=self.use_light)
     else:
       xyz_map = depth2xyzmap(depth, K)
-      poses, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, xyz_map=xyz_map, glctx=self.glctx, mesh_diameter=self.diameter, iteration=iteration, get_vis=self.debug>=2)
+      poses, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, xyz_map=xyz_map, glctx=self.glctx, mesh_diameter=self.diameter, iteration=iteration, get_vis=self.debug>=2, use_light=self.use_light)
     if vis is not None:
       refiner_dir = f'{self.debug_dir}/vis_refiner'
       os.makedirs(refiner_dir, exist_ok=True)
@@ -282,9 +283,9 @@ class FoundationPose:
     # Pass mask to scorer only if use_mask_iou is enabled
     scorer_mask = ob_mask if self.use_mask_iou else None
     if rgb_only_mode:
-      scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=zero_depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=scorer_mask)
+      scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=zero_depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=scorer_mask, use_light=self.use_light)
     else:
-      scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=scorer_mask)
+      scores, vis = self.scorer.predict(mesh=self.mesh, rgb=rgb, depth=depth, K=K, ob_in_cams=poses.data.cpu().numpy(), normal_map=normal_map, mesh_tensors=self.mesh_tensors, glctx=self.glctx, mesh_diameter=self.diameter, get_vis=self.debug>=2, ob_mask=scorer_mask, use_light=self.use_light)
     if vis is not None:
       score_dir = f'{self.debug_dir}/vis_score'
       os.makedirs(score_dir, exist_ok=True)
@@ -332,7 +333,7 @@ class FoundationPose:
 
     xyz_map = depth2xyzmap_batch(depth[None], torch.as_tensor(K, dtype=torch.float, device='cuda')[None], zfar=np.inf)[0]
 
-    pose, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=self.pose_last.reshape(1,4,4).data.cpu().numpy(), normal_map=None, xyz_map=xyz_map, mesh_diameter=self.diameter, glctx=self.glctx, iteration=iteration, get_vis=self.debug>=2)
+    pose, vis = self.refiner.predict(mesh=self.mesh, mesh_tensors=self.mesh_tensors, rgb=rgb, depth=depth, K=K, ob_in_cams=self.pose_last.reshape(1,4,4).data.cpu().numpy(), normal_map=None, xyz_map=xyz_map, mesh_diameter=self.diameter, glctx=self.glctx, iteration=iteration, get_vis=self.debug>=2, use_light=self.use_light)
     logging.info("pose done")
     if self.debug>=2:
       extra['vis'] = vis

@@ -94,6 +94,7 @@ class PoseDebugger(RealtimePoseEstimator):
             inplane_step=self.args.inplane_step,
             front_hemisphere_only=self.args.fix_z_axis,
             use_mask_iou=self.args.use_mask_iou,
+            use_light=self.args.use_light,
         )
 
         from mask_generator import create_mask_generator
