@@ -46,8 +46,8 @@ cd /path/to/FoundationPose
 
 # 서버 실행
 python realtime/server.py --port 5555 \
-    --mesh_file vcb/ref_views/ob_000001/model/model_vc.ply \
-    --mask_model vcb/rcnn360.pth
+    --mesh_file vcb/ref_views/ob_000001/model/model_vc_final.ply \
+    --mask_model vcb/rcnn500.pth
 ```
 
 ### 2. Local PC에서 Client 실행
@@ -73,9 +73,9 @@ python realtime/client.py --server_ip <GPU_SERVER_IP> --video ./test.mp4
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--port` | 5555 | ZeroMQ 포트 |
-| `--mesh_file` | model_vc.ply | 3D 메시 파일 경로 |
+| `--mesh_file` | model_vc_final.ply | 3D 메시 파일 경로 |
 | `--mesh_scale` | 0.01 | 메시 스케일 (cm→m) |
-| `--mask_model` | rcnn360.pth | 마스크 모델 경로 |
+| `--mask_model` | rcnn500.pth | 마스크 모델 경로 |
 | `--mask_type` | maskrcnn | 마스크 모델 타입 |
 | `--input_mode` | rgb | 입력 모드 (rgb/rgbd) |
 | `--symmetry` | z180 | 대칭 타입 |

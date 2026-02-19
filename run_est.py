@@ -64,6 +64,7 @@ class PoseConfig:
     inplane_step: int = 60
     input_mode: str = 'rgb'  # 'rgb' or 'rgbd'
     use_mask_iou: bool = True  # Use mask IoU bonus in scoring
+    use_light: bool = False  # False=constant shading (flat color), True=Phong shading
 
 
 @dataclass
@@ -71,7 +72,7 @@ class MaskConfig:
     """Mask 생성 관련 설정."""
     model_path: str
     model_type: str = 'yolo'
-    confidence: float = 0.5
+    confidence: float = 0.9
     config_file: Optional[str] = None
     dilate_kernel: int = 0
     dilate_iterations: int = 2
@@ -115,6 +116,7 @@ class EstimationConfig:
                 inplane_step=args.inplane_step,
                 input_mode=args.input_mode,
                 use_mask_iou=args.use_mask_iou,
+                use_light=args.use_light,
             ),
             mask=MaskConfig(
                 model_path=args.mask_model,
@@ -470,9 +472,10 @@ class PoseEstimationPipeline:
             min_n_views=self.config.pose.min_n_views,
             inplane_step=self.config.pose.inplane_step,
             front_hemisphere_only=self.config.pose.fix_z_axis,
-            use_mask_iou=self.config.pose.use_mask_iou
+            use_mask_iou=self.config.pose.use_mask_iou,
+            use_light=self.config.pose.use_light,
         )
-        logging.info(f"FoundationPose 초기화 완료 (front_hemisphere_only={self.config.pose.fix_z_axis}, use_mask_iou={self.config.pose.use_mask_iou})")
+        logging.info(f"FoundationPose 초기화 완료 (front_hemisphere_only={self.config.pose.fix_z_axis}, use_mask_iou={self.config.pose.use_mask_iou}, use_light={self.config.pose.use_light})")
 
         # 데이터 리더 초기화
         self.reader = YcbineoatReader(
@@ -744,6 +747,8 @@ def parse_args() -> argparse.Namespace:
         choices=['rgb', 'rgbd'], help='Input mode: rgb (RGB only) or rgbd (RGB + Depth)')
     pose.add_argument('--use_mask_iou', type=lambda x: x.lower() == 'true', default=True,
         help='Use mask IoU bonus in scoring')
+    pose.add_argument('--use_light', type=lambda x: x.lower() == 'true', default=False,
+        help='Use Phong shading (True) or constant shading (False)')
 
     # Mask 설정
     mask = parser.add_argument_group('Mask Generation')

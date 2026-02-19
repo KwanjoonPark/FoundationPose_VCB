@@ -4,7 +4,7 @@ FoundationPose ZeroMQ Server
 GPU 서버에서 실행 - 이미지를 받아 pose estimation 수행
 
 Usage:
-    python server.py --port 5555 --mesh_file ../vcb/ref_views/ob_000001/model/model_vc.ply
+    python server.py --port 5555 --mesh_file ../vcb/ref_views/ob_000001/model/model_vc_final.ply
 """
 
 import sys
@@ -216,9 +216,9 @@ class PoseCorrector:
 class ServerConfig:
     """서버 설정."""
     port: int = 5555
-    mesh_file: str = 'vcb/ref_views/ob_000001/model/model_vc.ply'
+    mesh_file: str = 'vcb/ref_views/ob_000001/model/model_vc_final.ply'
     mesh_scale: float = 0.01
-    mask_model: str = 'vcb/rcnn360.pth'
+    mask_model: str = 'vcb/rcnn500.pth'
     mask_type: str = 'maskrcnn'
     input_mode: str = 'rgb'  # 'rgb' or 'rgbd'
     use_mask_iou: bool = True
@@ -229,6 +229,7 @@ class ServerConfig:
     inplane_step: int = 60
     mask_dilate: int = 0  # 0=disabled, 3~7 recommended
     mask_dilate_iter: int = 2
+    use_light: bool = False  # False=constant shading (flat color), True=Phong shading
     debug: bool = False
 
 
@@ -255,7 +256,32 @@ class PoseEstimationServer:
 
         mesh = trimesh.load(self.config.mesh_file)
         if isinstance(mesh, trimesh.Scene):
+            for geom in mesh.geometry.values():
+                if isinstance(geom.visual, trimesh.visual.texture.TextureVisuals):
+                    mat = geom.visual.material
+                    if hasattr(mat, 'diffuse') and mat.diffuse is not None:
+                        diffuse = mat.diffuse[:3]
+                        rgba = np.tile(
+                            np.append(diffuse, 255).astype(np.uint8),
+                            (len(geom.vertices), 1),
+                        )
+                        geom.visual = trimesh.visual.ColorVisuals(vertex_colors=rgba)
+                trimesh.repair.fix_normals(geom)
             mesh = mesh.dump(concatenate=True)
+        else:
+            trimesh.repair.fix_normals(mesh)
+
+        mesh.process(validate=True)
+
+        # Unindex: 면별 고유 버텍스 → flat shading + 경계면 색상 그라데이션 제거
+        original_vc = np.array(mesh.visual.vertex_colors)
+        new_verts = mesh.vertices[mesh.faces.flatten()]
+        new_colors = original_vc[mesh.faces.flatten()]
+        new_faces = np.arange(len(mesh.faces) * 3).reshape(-1, 3)
+        mesh = trimesh.Trimesh(
+            vertices=new_verts, faces=new_faces, process=False
+        )
+        mesh.visual.vertex_colors = new_colors
 
         if self.config.mesh_scale != 1.0:
             mesh.apply_scale(self.config.mesh_scale)
@@ -283,6 +309,7 @@ class PoseEstimationServer:
             use_mask_iou=self.config.use_mask_iou,
             min_n_views=self.config.min_n_views,
             inplane_step=self.config.inplane_step,
+            use_light=self.config.use_light,
         )
 
         self.logger.info(
@@ -290,7 +317,8 @@ class PoseEstimationServer:
             f"front_hemisphere={self.config.fix_z_axis}, "
             f"mask_iou={self.config.use_mask_iou}, "
             f"min_n_views={self.config.min_n_views}, "
-            f"inplane_step={self.config.inplane_step}"
+            f"inplane_step={self.config.inplane_step}, "
+            f"use_light={self.config.use_light}"
         )
 
     def _init_mask_generator(self):
@@ -486,13 +514,13 @@ def parse_args():
 
     # Mesh
     parser.add_argument('--mesh_file', type=str,
-                        default='vcb/ref_views/ob_000001/model/model_vc.ply',
+                        default='vcb/ref_views/ob_000001/model/model_vc_final.ply',
                         help='Path to mesh file (PLY or OBJ)')
     parser.add_argument('--mesh_scale', type=float, default=0.01,
                         help='Mesh scale factor (e.g., 0.01 for cm to m)')
 
     # Mask
-    parser.add_argument('--mask_model', type=str, default='vcb/rcnn360.pth',
+    parser.add_argument('--mask_model', type=str, default='vcb/rcnn500.pth',
                         help='Path to mask model')
     parser.add_argument('--mask_type', type=str, default='maskrcnn',
                         choices=['yolo', 'maskrcnn'],
@@ -519,6 +547,8 @@ def parse_args():
                         help='Number of viewpoints for pose hypothesis')
     parser.add_argument('--inplane_step', type=int, default=60,
                         help='In-plane rotation step in degrees')
+    parser.add_argument('--use_light', type=lambda x: x.lower() == 'true', default=False,
+                        help='Use Phong shading (True) or constant shading (False)')
 
     # Debug
     parser.add_argument('--debug', action='store_true',
@@ -545,6 +575,7 @@ def main():
         use_mask_iou=args.use_mask_iou,
         min_n_views=args.min_n_views,
         inplane_step=args.inplane_step,
+        use_light=args.use_light,
         debug=args.debug,
     )
 

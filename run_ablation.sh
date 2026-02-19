@@ -1,9 +1,9 @@
 #!/bin/bash
 # Ablation Study for FoundationPose VCB Handle
 
-MASK_MODEL="vcb/rcnn360.pth"
+MASK_MODEL="vcb/rcnn500.pth"
 MESH_OBJ="vcb/ref_views/ob_000001/model/model.obj"
-MESH_VC="vcb/ref_views/ob_000001/model/model_vc.ply"
+MESH_VC="vcb/ref_views/ob_000001/model/model_vc_final.ply"
 
 echo "=========================================="
 echo "Ablation Study Start"

@@ -63,13 +63,13 @@
   - `fix_z_axis=True, symmetry=z180, use_mask_iou=True, mesh=model.obj, input=RGBD`
 
 - **A5 (+VC)**: Use vertex color model
-  - `fix_z_axis=True, symmetry=z180, use_mask_iou=True, mesh=model_vc.ply, input=RGBD`
+  - `fix_z_axis=True, symmetry=z180, use_mask_iou=True, mesh=model_vc_final.ply, input=RGBD`
 
 - **A6 (RGB-only)**: Remove depth input
-  - `fix_z_axis=True, symmetry=z180, use_mask_iou=True, mesh=model_vc.ply, input=RGB`
+  - `fix_z_axis=True, symmetry=z180, use_mask_iou=True, mesh=model_vc_final.ply, input=RGB`
 
 ### Test Configuration
 
 - Dataset: VCB Handle test scene (200 frames)
-- Mask model: Mask R-CNN (rcnn360.pth)
+- Mask model: Mask R-CNN (rcnn500.pth)
 - GPU: Quadro GV100
