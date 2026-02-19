@@ -66,30 +66,34 @@ year          = {2023},
 
 1) [Optional] Download our preprocessed reference views [here](https://drive.google.com/drive/folders/1PXXCOJqHXwQTbwPwPbGDN9_vLVe0XpFS?usp=sharing) in order to run model-free few-shot version.
 
-# Env setup option 1: docker (recommended)
-  ```
-  cd docker/
-  docker pull wenbowen123/foundationpose && docker tag wenbowen123/foundationpose foundationpose  # Or to build from scratch: docker build --network host -t foundationpose .
-  bash docker/run_container.sh
-  ```
+# Env setup option 1: Docker on Jetson AGX Orin (recommended)
 
-
-If it's the first time you launch the container, you need to build extensions. Run this command *inside* the Docker container.
-```
-bash build_all.sh
+Build the Docker image (~2-3.5 hours on first build):
+```bash
+docker build -f docker/dockerfile.jetson -t foundationpose-jetson docker/
 ```
 
-Later you can execute into the container without re-build.
-```
-docker exec -it foundationpose bash
+Launch the container:
+```bash
+bash docker/run_container_jetson.sh
 ```
 
-For more recent GPU such as 4090, refer to [this](https://github.com/NVlabs/FoundationPose/issues/27).
-In short, do the following:
+On the first launch, build the C++/CUDA extensions *inside* the container:
+```bash
+bash docker/build_extensions_jetson.sh
 ```
-docker pull shingarey/foundationpose_custom_cuda121:latest
+
+Later you can re-enter the container without rebuilding:
+```bash
+docker exec -it foundationpose-jetson bash
 ```
-Then modify the bash script to use this image instead of `foundationpose:latest`.
+
+### Key details
+- Base image: `nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3` (JetPack 5.1.1, PyTorch 2.0)
+- CUDA arch: sm_87 (Orin). Override with `--build-arg CUDA_ARCH=<value>` if needed
+- Pip packages pinned in `docker/requirements-jetson.txt` for reproducible builds
+- RealSense camera runs on the **host**; container accesses ROS topics via `--network=host`
+- No YOLO/ultralytics, no NeRF/kaolin (Jetson scope: Mask R-CNN only)
 
 
 # Env setup option 2: conda (experimental)
