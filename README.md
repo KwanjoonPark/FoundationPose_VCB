@@ -1,4 +1,17 @@
-# FoundationPose VCB — 사용 설명서
+# FoundationPose VCB
+
+NVIDIA [FoundationPose](https://nvlabs.github.io/FoundationPose/) (CVPR 2024 Highlight)의 포크로, Texture-less한 고반사 단색 금속이라는 성질이 있는 VCB(산업용 핸들) pose 추정에 특화된 확장 버전입니다. Jetson AGX Orin에서 RealSense 카메라와 ROS를 활용한 실시간 6DoF pose 추정 및 트래킹을 지원합니다.
+
+**원본 논문:** [FoundationPose: Unified 6D Pose Estimation and Tracking of Novel Objects](https://arxiv.org/abs/2312.08344)
+
+**주요 확장 기능:**
+- Mask R-CNN 기반 세그멘테이션 (Jetson 환경)
+- Mask IoU 스코어링 (산업 현장 클러터 환경 대응)
+- ROS 통합 (`PoseStamped` 발행, TF 브로드캐스트)
+- RGB 전용 모드 (금속/반사 표면 대응)
+- Z축 보정 (벽면 장착 물체 대응)
+
+---
 
 ## 사전 준비
 
@@ -25,14 +38,16 @@ docker exec -it foundationpose-jetson bash
 카메라는 컨테이너가 아닌 **호스트**에서 실행합니다. 컨테이너는 `--network=host`로 ROS 토픽에 접근합니다.
 
 ```bash
-roslaunch realsense2_camera rs_camera.launch align_depth:=true
+roslaunch realsense2_camera rs_camera.launch  align_depth:=true  pointcloud:=false  enable_gyro:=false  enable_accel:=false  color_width:=1280  color_height:=720  color_fps:=30
 ```
 
 ### 3. 모델 가중치
 
-`weights/` 폴더에 다음 디렉토리가 있어야 합니다:
+Download all network weights from [here](https://drive.google.com/drive/folders/1DFezOAD0oD1BblsXVxqDsl8fj0qzB82i?usp=sharing) and put them under the folder `weights/`. For the refiner, you will need `2023-10-28-18-33-37`. For scorer, you will need `2024-01-11-20-02-45`.
+
 - Refiner: `weights/2023-10-28-18-33-37/`
 - Scorer: `weights/2024-01-11-20-02-45/`
+
 
 ---
 
@@ -194,11 +209,50 @@ python run_est.py \
     --debug 2
 ```
 
-### realtime/server.py — ZeroMQ GPU 서버
+### run_demo.py — 기본 데모 (mustard bottle)
 
-원격 클라이언트로부터 이미지를 받아 pose 추정 수행:
+원본 FoundationPose 데모입니다. 첫 프레임에서 pose 추정 후 자동으로 트래킹 모드로 전환됩니다. 첫 실행 시 온라인 컴파일로 느릴 수 있습니다.
+
 ```bash
-python realtime/server.py --port 5555 \
-    --mesh_file vcb/ref_views/ob_000001/model/model_vc_final.ply \
-    --mask_model vcb/rcnn500.pth
+# 데모 데이터 다운로드: https://drive.google.com/drive/folders/1pRyFmxYXmAnpku7nGRioZaKrVJtIsroP
+# demo_data/ 폴더에 압축 해제 후 실행
+python run_demo.py
 ```
+
+### 데이터셋 평가 (LINEMOD, YCB-Video)
+
+```bash
+python run_linemod.py --linemod_dir /path/to/LINEMOD
+python run_ycb_video.py --ycbv_dir /path/to/YCB_Video
+```
+
+---
+
+## Troubleshooting
+
+- GPU 4090 등 최신 GPU 설정: [Issue #27](https://github.com/NVlabs/FoundationPose/issues/27)
+- Windows 환경 설정: [Issue #148](https://github.com/NVlabs/FoundationPose/issues/148)
+- 비정상적인 결과가 나올 경우: [Issue #44](https://github.com/NVlabs/FoundationPose/issues/44#issuecomment-2048141043), [설정 가이드](https://github.com/030422Lee/FoundationPose_manual)
+
+---
+
+## 인용 (Citation)
+
+```bibtex
+@InProceedings{foundationposewen2024,
+author        = {Bowen Wen, Wei Yang, Jan Kautz, Stan Birchfield},
+title         = {{FoundationPose}: Unified 6D Pose Estimation and Tracking of Novel Objects},
+booktitle     = {CVPR},
+year          = {2024},
+}
+```
+
+---
+
+## 라이선스
+
+코드와 데이터는 [NVIDIA Source Code License](LICENSE) 하에 배포됩니다. Copyright © 2024, NVIDIA Corporation. All rights reserved.
+
+## 연락처
+
+원본 FoundationPose 관련 문의: [Bowen Wen](https://wenbowen123.github.io/)
