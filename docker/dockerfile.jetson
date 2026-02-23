@@ -77,7 +77,7 @@ RUN TORCH_CUDA_ARCH_LIST="${CUDA_ARCH}" FORCE_CUDA=1 \
 
 # Stage 6: Build PyTorch3D v0.7.8 from source (~60-90 min on Jetson)
 RUN TORCH_CUDA_ARCH_LIST="${CUDA_ARCH}" FORCE_CUDA=1 \
-    pip3 install --no-cache-dir "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.8"
+    pip3 install --no-cache-dir "git+https://github.com/facebookresearch/pytorch3d.git@v0.7.7"
 
 # Stage 7: Build Detectron2 v0.6 from source (Mask R-CNN)
 RUN TORCH_CUDA_ARCH_LIST="${CUDA_ARCH}" \
