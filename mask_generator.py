@@ -428,9 +428,9 @@ def main():
         description='Generate and visualize segmentation masks',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument('--model', type=str, required=True,
+    parser.add_argument('--model', type=str, required=True, default='weights/2026-02-12-13-41-52/model_best.pth',
                         help='Path to model weights (.pt for YOLO, .pth for Mask R-CNN)')
-    parser.add_argument('--model_type', type=str, default='yolo',
+    parser.add_argument('--model_type', type=str, default='maskrcnn',
                         choices=['yolo', 'maskrcnn'],
                         help='Model type')
     parser.add_argument('--config_file', type=str, default=None,
@@ -441,7 +441,7 @@ def main():
                         help='Directory containing images')
     parser.add_argument('--output_dir', type=str, default='debug/masks',
                         help='Output directory for visualizations')
-    parser.add_argument('--conf', type=float, default=0.5,
+    parser.add_argument('--conf', type=float, default=0.9,
                         help='Confidence threshold')
     args = parser.parse_args()
 

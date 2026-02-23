@@ -74,6 +74,7 @@ class MaskConfig:
     model_type: str = 'yolo'
     confidence: float = 0.9
     config_file: Optional[str] = None
+    depth_refine: bool = False
     dilate_kernel: int = 0
     dilate_iterations: int = 2
 
@@ -123,6 +124,7 @@ class EstimationConfig:
                 model_type=args.mask_type,
                 confidence=args.mask_conf,
                 config_file=args.mask_config,
+                depth_refine=args.mask_depth_refine,
                 dilate_kernel=args.mask_dilate,
                 dilate_iterations=args.mask_dilate_iter,
             ),
@@ -589,7 +591,8 @@ class PoseEstimationPipeline:
         depth = self.reader.get_depth(frame_idx)
 
         # 마스크 생성
-        mask, mask_info = self.mask_generator.get_mask_with_depth(color, depth)
+        mask, mask_info = self.mask_generator.get_mask_with_depth(
+            color, depth, depth_refine=self.config.mask.depth_refine)
         if mask is None:
             logging.warning(f"프레임 {frame_idx}: 마스크 없음 - {mask_info.get('error', 'unknown')}")
             return None
@@ -754,8 +757,10 @@ def parse_args() -> argparse.Namespace:
     mask = parser.add_argument_group('Mask Generation')
     mask.add_argument('--mask_model', type=str, default='weights/2026-02-12-13-41-52/model_best.pth')
     mask.add_argument('--mask_type', type=str, default='maskrcnn', choices=['yolo', 'maskrcnn'])
-    mask.add_argument('--mask_conf', type=float, default=0.5)
+    mask.add_argument('--mask_conf', type=float, default=0.9)
     mask.add_argument('--mask_config', type=str, default=None)
+    mask.add_argument('--mask_depth_refine', type=lambda x: x.lower() == 'true', default=False,
+        help='Refine mask using depth information (default: False)')
     mask.add_argument('--mask_dilate', type=int, default=0,
         help='Mask dilation kernel size (0=disabled, 3~7 recommended)')
     mask.add_argument('--mask_dilate_iter', type=int, default=2,
@@ -764,7 +769,7 @@ def parse_args() -> argparse.Namespace:
     # Debug 설정
     debug = parser.add_argument_group('Debug')
     debug.add_argument('--debug', type=int, default=2)
-    debug.add_argument('--debug_dir', type=str, default=f'{code_dir}/vcb/debug/newply')
+    debug.add_argument('--debug_dir', type=str, default=f'{code_dir}/vcb/debug')
 
     return parser.parse_args()
 
