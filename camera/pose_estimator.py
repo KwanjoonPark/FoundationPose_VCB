@@ -420,7 +420,8 @@ class RealtimePoseEstimator:
 
         # ── 1단계: R-CNN 마스킹 ──
         self.status.set(StatusMonitor.MASKING)
-        mask, mask_info = self.mask_generator.get_mask_with_depth(rgb, depth)
+        mask, mask_info = self.mask_generator.get_mask_with_depth(
+            rgb, depth, depth_refine=self.args.mask_depth_refine)
 
         if mask is None:
             logging.warning("R-CNN: 객체를 찾을 수 없습니다!")
@@ -785,6 +786,8 @@ def parse_args():
     parser.add_argument('--mask_type', type=str, default='maskrcnn',
         choices=['yolo', 'maskrcnn'])
     parser.add_argument('--mask_conf', type=float, default=0.9)
+    parser.add_argument('--mask_depth_refine', type=lambda x: x.lower() == 'true', default=False,
+        help='Refine mask using depth information (default: False)')
     parser.add_argument('--mask_dilate', type=int, default=0)
 
     # Pose

@@ -158,7 +158,8 @@ class PoseDebugger(RealtimePoseEstimator):
 
         # 1단계: R-CNN 마스킹
         self.status.set(StatusMonitor.MASKING)
-        mask, mask_info = self.mask_generator.get_mask_with_depth(rgb, depth)
+        mask, mask_info = self.mask_generator.get_mask_with_depth(
+            rgb, depth, depth_refine=self.args.mask_depth_refine)
 
         if mask is None:
             logging.warning("R-CNN: 객체를 찾을 수 없습니다!")
