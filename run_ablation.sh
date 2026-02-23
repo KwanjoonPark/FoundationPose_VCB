@@ -1,7 +1,7 @@
 #!/bin/bash
 # Ablation Study for FoundationPose VCB Handle
 
-MASK_MODEL="vcb/rcnn500.pth"
+MASK_MODEL="weights/2026-02-12-13-41-52/model_best.pth"
 MESH_OBJ="vcb/ref_views/ob_000001/model/model.obj"
 MESH_VC="vcb/ref_views/ob_000001/model/model_vc_final.ply"
 

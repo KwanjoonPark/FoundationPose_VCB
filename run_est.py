@@ -752,7 +752,7 @@ def parse_args() -> argparse.Namespace:
 
     # Mask 설정
     mask = parser.add_argument_group('Mask Generation')
-    mask.add_argument('--mask_model', type=str, default='vcb/rcnn500.pth')
+    mask.add_argument('--mask_model', type=str, default='weights/2026-02-12-13-41-52/model_best.pth')
     mask.add_argument('--mask_type', type=str, default='maskrcnn', choices=['yolo', 'maskrcnn'])
     mask.add_argument('--mask_conf', type=float, default=0.5)
     mask.add_argument('--mask_config', type=str, default=None)

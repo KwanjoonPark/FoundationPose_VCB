@@ -212,7 +212,7 @@ def parse_args():
 
     # Mask
     parser.add_argument('--mask_model', type=str,
-        default=f'{code_dir}/vcb/rcnn500.pth')
+        default=f'{code_dir}/weights/2026-02-12-13-41-52/model_best.pth')
     parser.add_argument('--mask_type', type=str, default='maskrcnn',
         choices=['yolo', 'maskrcnn'])
     parser.add_argument('--mask_conf', type=float, default=0.5)

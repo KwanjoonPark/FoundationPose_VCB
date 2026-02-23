@@ -71,5 +71,5 @@
 ### Test Configuration
 
 - Dataset: VCB Handle test scene (200 frames)
-- Mask model: Mask R-CNN (rcnn500.pth)
+- Mask model: Mask R-CNN (weights/2026-02-12-13-41-52/model_best.pth)
 - GPU: Quadro GV100
