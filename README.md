@@ -46,6 +46,7 @@ bash docker/build_extensions_jetson.sh
 재접속 시:
 ```bash
 docker exec -it foundationpose-jetson bash
+cd /home/robot/Workspace/Docker_Test/FoundationPose_VCB
 ```
 
 ### 4. RealSense 카메라 실행 (호스트에서)
@@ -215,23 +216,6 @@ python run_est.py \
     --symmetry z180 \
     --input_mode rgb \
     --debug 2
-```
-
-### run_demo.py — 기본 데모 (mustard bottle)
-
-원본 FoundationPose 데모입니다. 첫 프레임에서 pose 추정 후 자동으로 트래킹 모드로 전환됩니다. 첫 실행 시 온라인 컴파일로 느릴 수 있습니다.
-
-```bash
-# 데모 데이터 다운로드: https://drive.google.com/drive/folders/1pRyFmxYXmAnpku7nGRioZaKrVJtIsroP
-# demo_data/ 폴더에 압축 해제 후 실행
-python run_demo.py
-```
-
-### 데이터셋 평가 (LINEMOD, YCB-Video)
-
-```bash
-python run_linemod.py --linemod_dir /path/to/LINEMOD
-python run_ycb_video.py --ycbv_dir /path/to/YCB_Video
 ```
 
 ---
