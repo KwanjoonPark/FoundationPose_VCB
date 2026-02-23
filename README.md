@@ -15,7 +15,22 @@ NVIDIA [FoundationPose](https://nvlabs.github.io/FoundationPose/) (CVPR 2024 Hig
 
 ## 사전 준비
 
-### 1. Docker 컨테이너 실행
+### 1. 저장소 클론
+
+```bash
+git clone https://github.com/KwanjoonPark/FoundationPose_VCB.git
+cd FoundationPose_VCB
+git checkout jetson
+```
+
+### 2. 모델 가중치 다운로드
+
+[Google Drive](https://drive.google.com/drive/folders/1DFezOAD0oD1BblsXVxqDsl8fj0qzB82i?usp=sharing)에서 네트워크 가중치를 다운로드하여 `weights/` 폴더에 배치합니다.
+
+- Refiner: `weights/2023-10-28-18-33-37/`
+- Scorer: `weights/2024-01-11-20-02-45/`
+
+### 3. Docker 컨테이너 실행
 
 ```bash
 # 이미지 빌드 (최초 1회, ~2-3.5시간)
@@ -33,20 +48,13 @@ bash docker/build_extensions_jetson.sh
 docker exec -it foundationpose-jetson bash
 ```
 
-### 2. RealSense 카메라 실행 (호스트에서)
+### 4. RealSense 카메라 실행 (호스트에서)
 
 카메라는 컨테이너가 아닌 **호스트**에서 실행합니다. 컨테이너는 `--network=host`로 ROS 토픽에 접근합니다.
 
 ```bash
 roslaunch realsense2_camera rs_camera.launch  align_depth:=true  pointcloud:=false  enable_gyro:=false  enable_accel:=false  color_width:=1280  color_height:=720  color_fps:=30
 ```
-
-### 3. 모델 가중치
-
-Download all network weights from [here](https://drive.google.com/drive/folders/1DFezOAD0oD1BblsXVxqDsl8fj0qzB82i?usp=sharing) and put them under the folder `weights/`. For the refiner, you will need `2023-10-28-18-33-37`. For scorer, you will need `2024-01-11-20-02-45`.
-
-- Refiner: `weights/2023-10-28-18-33-37/`
-- Scorer: `weights/2024-01-11-20-02-45/`
 
 
 ---
