@@ -171,18 +171,13 @@ pose_estimator, pose_streamer가 발행하는 토픽:
 | `/foundation_pose/pose` | `PoseStamped` | 6DoF pose (position + quaternion) |
 | `/foundation_pose/result` | `String` (JSON) | pose, euler 각도, confidence 포함 |
 
+PoseStamped 예시:
+
+<img width="490" height="323" alt="ros_topic_publish" src="https://github.com/user-attachments/assets/3edbdbbb-c08d-4380-a2e9-ced5e0e77e34" />
+
 JSON 예시:
-```json
-{
-  "object_found": true,
-  "pose_6d": {
-    "translation": {"x": 0.05, "y": -0.02, "z": 0.35},
-    "rotation_euler_deg": {"roll": 2.1, "pitch": 15.3, "yaw": -3.7},
-    "rotation_quaternion": {"x": 0.1, "y": 0.13, "z": -0.03, "w": 0.99}
-  },
-  "confidence": 0.87
-}
-```
+
+<img width="821" height="177" alt="json" src="https://github.com/user-attachments/assets/28056c61-7f42-42d1-8b1b-a6a31b609e1f" />
 
 ---
 
