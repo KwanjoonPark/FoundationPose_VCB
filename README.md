@@ -25,10 +25,11 @@ git checkout jetson
 
 ### 2. 모델 가중치 다운로드
 
-[Google Drive](https://drive.google.com/drive/folders/1DFezOAD0oD1BblsXVxqDsl8fj0qzB82i?usp=sharing)에서 네트워크 가중치를 다운로드하여 `weights/` 폴더에 배치합니다.
+Google Drive ([Refiner/Scorer](https://drive.google.com/drive/folders/1DFezOAD0oD1BblsXVxqDsl8fj0qzB82i?usp=sharing), [R-CNN Mask](https://drive.google.com/drive/folders/1RI5jrOB-n2MsV5uAT8gQvsknv8u1ROi-?usp=drive_link)) 에서 네트워크 가중치를 다운로드하여 `weights/` 폴더에 배치합니다.
 
 - Refiner: `weights/2023-10-28-18-33-37/`
 - Scorer: `weights/2024-01-11-20-02-45/`
+- R-CNN Mask: `weights/2026-02-12-13-41-52/`
 
 ### 3. Docker 컨테이너 실행
 
