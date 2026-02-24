@@ -84,8 +84,15 @@ roslaunch realsense2_camera rs_camera.launch  align_depth:=true  pointcloud:=fal
 python run_est.py --debug 2
 ```
 - debug 1 : 6 DoF 정보를 담고 있는 4x4행렬 (ob_in_cam, cam_in_ob)
+<img width="640" height="80" alt="ob_in_cam" src="https://github.com/user-attachments/assets/2a72017f-8117-4848-b41a-12bf7075ee02" />
+
+
 - debug 2 : Object 위에 6 DoF 정보 시각화 (track_vis)
+<img width="640" height="360" alt="000000" src="https://github.com/user-attachments/assets/0db394b6-5acf-4b21-92b3-9a8e6fcc5570" />
+
 - debug 3 : Pose Estimation 과정 시각화 (vis_refiner, vis_scorer)
+<img width="383" height="487" alt="vis_scorer" src="https://github.com/user-attachments/assets/cf2bdeba-de6b-4e1c-87e0-66ebed80647e" />
+<!-- <img width="916" height="584" alt="vis_refiner" src="https://github.com/user-attachments/assets/c8a1546e-c9f2-4141-b423-ebe1e14c9499" /> -->
 
 ---
 
