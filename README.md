@@ -154,7 +154,7 @@ python realtime/server.py --port 5555 \
 | `--port` | 5555 | ZeroMQ 포트 |
 | `--mesh_file` | model_vc.ply | 3D 메시 파일 경로 |
 | `--mesh_scale` | 0.01 | 메시 스케일 (cm→m) |
-| `--mask_model` | rcnn360.pth | 마스크 모델 경로 |
+| `--mask_model` | weights/2026-02-12-13-41-52/model_best.pth | 마스크 모델 경로 |
 | `--mask_type` | maskrcnn | 마스크 모델 타입 (maskrcnn/yolo) |
 | `--input_mode` | rgb | 입력 모드 (rgb/rgbd) |
 | `--symmetry` | z180 | 대칭 타입 |
