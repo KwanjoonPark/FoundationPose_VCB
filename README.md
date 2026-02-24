@@ -48,6 +48,12 @@ test_scene/
 
 ### 4. Docker 컨테이너 실행
 
+**Prerequisites:**
+- Jetson AGX Orin with JetPack 5.1 (L4T R35.2.1)
+- Docker with NVIDIA runtime (`nvidia-container-runtime`)
+- 최소 25GB 여유 디스크 (빌드 시), 최종 이미지 ~15GB
+- 베이스 이미지는 첫 빌드 시 자동으로 pull됨: `nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3` (~11.7GB)
+
 ```bash
 # 이미지 빌드 (최초 1회, ~2-3.5시간)
 docker build -f docker/dockerfile.jetson -t foundationpose-jetson docker/
@@ -155,24 +161,6 @@ python camera/pose_debugger.py
 ROS publisher 없이 디버깅 전용. `camera/debug/{session}/` 에 프레임별 결과 저장.
 
 키 조작은 pose_estimator.py와 동일합니다.
-
-### raw_images_collector.py — 프레임 캡처
-
-RGB + Depth 이미지를 파일로 저장합니다 (학습 데이터 수집용).
-
-```bash
-python camera/raw_images_collector.py --output captured_frames --frames 50
-```
-
-**키 조작:**
-| 키 | 기능 |
-|---|---|
-| `s` / Space | 한 장 캡처 |
-| `b` | 연속 녹화 시작 |
-| `e` | 연속 녹화 종료 |
-| `q` | 종료 |
-
----
 
 ## ROS 토픽
 
