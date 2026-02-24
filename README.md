@@ -111,6 +111,7 @@ python run_est.py --debug 2
 ```bash
 python camera/pose_estimator.py
 ```
+![pose_estimation_demo영상](https://github.com/user-attachments/assets/7efad2c5-826c-49dc-826e-dc8df8fb4d58)
 
 **키 조작:**
 | 키 | 기능 |
