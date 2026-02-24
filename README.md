@@ -135,7 +135,7 @@ python camera/pose_estimator.py \
 
 ### pose_streamer.py — 연속 자동 스트리머
 
-키 입력 없이 매 프레임 자동으로 pose를 추정하여 ROS 토픽에 발행합니다.
+키 입력 없이 매 프레임 자동으로 pose를 추정하여 ROS 토픽에 발행합니다. (프레임 당 Pose 추정 시간 약 4초 / Object가 감지되지 않을 때 바로 에러 출력)
 
 ```bash
 # GUI 모드
