@@ -25,13 +25,28 @@ git checkout jetson
 
 ### 2. 모델 가중치 다운로드
 
-Google Drive ([Refiner/Scorer](https://drive.google.com/drive/folders/1DFezOAD0oD1BblsXVxqDsl8fj0qzB82i?usp=sharing), [R-CNN Mask](https://drive.google.com/drive/folders/1RI5jrOB-n2MsV5uAT8gQvsknv8u1ROi-?usp=drive_link)) 에서 네트워크 가중치를 다운로드하여 `weights/` 폴더에 배치합니다.
+Google Drive ([Refiner/Scorer](https://drive.google.com/drive/folders/1DFezOAD0oD1BblsXVxqDsl8fj0qzB82i?usp=sharing), [R-CNN Mask](https://drive.google.com/drive/folders/1FEajd4v0Y7THdY5KOvsY_cdBPCKg70Ng?usp=drive_link)) 에서 네트워크 가중치를 다운로드하여 `weights/` 폴더에 배치합니다.
 
 - Refiner: `weights/2023-10-28-18-33-37/`
 - Scorer: `weights/2024-01-11-20-02-45/`
 - R-CNN Mask: `weights/2026-02-12-13-41-52/`
 
-### 3. Docker 컨테이너 실행
+### 3. Test Dataset 다운로드 (선택)
+
+Google Drive ([test_scene](https://drive.google.com/drive/folders/1FEajd4v0Y7THdY5KOvsY_cdBPCKg70Ng?usp=drive_link)) 에서 테스트 데이터셋을 다운로드 하여 `vcb/ref_views/` 폴더에 배치합니다.
+
+```
+test_scene/
+├── depth/
+│   ├── 000000.png
+│   └── 000001.png
+├── rgb/
+│   ├── 000000.png
+│   └── 000001.png
+└── cam_K.txt
+```
+
+### 4. Docker 컨테이너 실행
 
 ```bash
 # 이미지 빌드 (최초 1회, ~2-3.5시간)
@@ -50,7 +65,7 @@ docker exec -it foundationpose-jetson bash
 cd /home/robot/Workspace/Docker_Test/FoundationPose_VCB
 ```
 
-### 4. RealSense 카메라 실행 (호스트에서)
+### 5. RealSense 카메라 실행 (호스트에서)
 
 카메라는 컨테이너가 아닌 **호스트**에서 실행합니다. 컨테이너는 `--network=host`로 ROS 토픽에 접근합니다.
 
@@ -58,12 +73,23 @@ cd /home/robot/Workspace/Docker_Test/FoundationPose_VCB
 roslaunch realsense2_camera rs_camera.launch  align_depth:=true  pointcloud:=false  enable_gyro:=false  enable_accel:=false  color_width:=1280  color_height:=720  color_fps:=30
 ```
 
+---
+
+## Test Dataset 으로 실행
+
+### run_est.py — 오프라인 Pose 추정
+
+저장된 이미지 시퀀스에 대해 pose 추정 수행:
+```bash
+python run_est.py --debug 2
+```
+- debug 1 : 6 DoF 정보를 담고 있는 4x4행렬 (ob_in_cam, cam_in_ob)
+- debug 2 : Object 위에 6 DoF 정보 시각화 (track_vis)
+- debug 3 : Pose Estimation 과정 시각화 (vis_refiner, vis_scorer)
 
 ---
 
-## camera/ 도구
-
-모든 도구는 컨테이너 안에서 실행합니다.
+## Camera로 실시간 실행
 
 ### pose_estimator.py — 인터랙티브 Pose 추정
 
@@ -76,17 +102,17 @@ python camera/pose_estimator.py
 **키 조작:**
 | 키 | 기능 |
 |---|---|
-| `p` / Space | Pose 추정 (단일) |
+| `p` / `Space Bar` | Pose 추정 (단일) |
 | `t` | 트래킹 모드 ON/OFF (연속 추정) |
 | `r` | 리셋 (트래킹 초기화) |
 | `s` | 현재 프레임 + 결과 저장 |
 | `q` | 종료 |
 
-**주요 옵션:**
+**주요 옵션 (default):**
 ```bash
 python camera/pose_estimator.py \
     --mesh_file vcb/ref_views/ob_000001/model/model.obj \
-    --mask_model vcb/rcnn500.pth \
+    --mask_model weights/2026-02-12-13-41-52/model_best.pth \
     --mask_type maskrcnn \
     --mask_conf 0.9 \
     --input_mode rgb \
@@ -200,24 +226,6 @@ VCB 핸들은 원통형이므로 `z180` 사용 (Z축 기준 180도 대칭).
 벽면 장착 물체용. 물체 Z축이 항상 카메라를 향하도록 보정합니다.
 - 가설 단계: 뒷면 후보 ~50% 제거 (`front_hemisphere_only`)
 - 추정 후: Z축 방향 재확인 + 필요 시 FLIP_X 적용
-
----
-
-## 기타 도구
-
-### run_est.py — 오프라인 Pose 추정
-
-저장된 이미지 시퀀스에 대해 pose 추정 수행:
-```bash
-python run_est.py \
-    --mesh_file vcb/ref_views/ob_000001/model/model_vc_final.ply \
-    --test_scene_dir vcb/ref_views/test_scene \
-    --mask_model vcb/rcnn500.pth \
-    --mask_type maskrcnn \
-    --symmetry z180 \
-    --input_mode rgb \
-    --debug 2
-```
 
 ---
 
