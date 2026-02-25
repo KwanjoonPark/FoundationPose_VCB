@@ -24,7 +24,7 @@ from Utils import *
 from datareader import *
 
 
-def vis_batch_data_scores(pose_data, ids, scores, pad_margin=5):
+def vis_batch_data_scores(pose_data, ids, scores, mask_ious=None, pad_margin=5):
   assert len(scores)==len(ids)
   canvas = []
   for id in ids:
@@ -34,17 +34,29 @@ def vis_batch_data_scores(pose_data, ids, scores, pad_margin=5):
     zmin = pose_data.depthAs[id].data.cpu().numpy().reshape(H,W).min()
     zmax = pose_data.depthAs[id].data.cpu().numpy().reshape(H,W).max()
     depthA_vis = depth_to_vis(pose_data.depthAs[id].data.cpu().numpy().reshape(H,W), zmin=zmin, zmax=zmax, inverse=False)
-    depthB_vis = depth_to_vis(pose_data.depthBs[id].data.cpu().numpy().reshape(H,W), zmin=zmin, zmax=zmax, inverse=False)
+    # 4열: R-CNN 마스크 × 렌더링 마스크 IoU 시각화 (있으면) or depth fallback
+    if pose_data.maskBs is not None:
+      maskB = pose_data.maskBs[id].data.cpu().numpy().reshape(H, W) > 0.5  # R-CNN
+      maskA = pose_data.depthAs[id].data.cpu().numpy().reshape(H, W) > 0    # 렌더링
+      col4_vis = np.zeros((H, W, 3), dtype=np.float64)
+      col4_vis[maskA & maskB] = [0, 255, 0]    # 초록: 겹침 (intersection)
+      col4_vis[maskB & ~maskA] = [0, 0, 255]   # 파랑: R-CNN에만 있음
+      col4_vis[maskA & ~maskB] = [255, 0, 0]   # 빨강: 렌더링에만 있음
+    else:
+      col4_vis = depth_to_vis(pose_data.depthBs[id].data.cpu().numpy().reshape(H,W), zmin=zmin, zmax=zmax, inverse=False)
     if pose_data.normalAs is not None:
       pass
     pad = np.ones((rgbA_vis.shape[0],pad_margin,3))*255
     if pose_data.normalAs is not None:
       pass
     else:
-      row = np.concatenate([rgbA_vis, pad, depthA_vis, pad, rgbB_vis, pad, depthB_vis], axis=1)
+      row = np.concatenate([rgbA_vis, pad, depthA_vis, pad, rgbB_vis, pad, col4_vis], axis=1)
     s = 100/row.shape[0]
     row = cv2.resize(row, fx=s, fy=s, dsize=None)
-    row = cv_draw_text(row, text=f'id:{id}, score:{scores[id]:.3f}', uv_top_left=(10,10), color=(0,255,0), fontScale=0.5)
+    label = f'id:{id}, score:{scores[id]:.3f}'
+    if mask_ious is not None:
+      label += f', IoU bonus:{mask_ious[id]*10:.3f}'
+    row = cv_draw_text(row, text=label, uv_top_left=(10,10), color=(0,255,0), fontScale=0.5)
     canvas.append(row)
     pad = np.ones((pad_margin, row.shape[1], 3))*255
     canvas.append(pad)
@@ -91,13 +103,14 @@ def make_crop_data_batch(render_size, ob_in_cams, mesh, rgb, depth, K, crop_rati
 
   # Compute mask IoU between rendered mask and actual mask for scoring bonus
   mask_ious = None
+  maskBs_crop = None
   if ob_mask is not None:
-    maskBs = kornia.geometry.transform.warp_perspective(torch.as_tensor(ob_mask, dtype=torch.float, device='cuda')[None,None].expand(B,-1,-1,-1), tf_to_crops, dsize=render_size, mode='nearest', align_corners=False)
+    maskBs_crop = kornia.geometry.transform.warp_perspective(torch.as_tensor(ob_mask, dtype=torch.float, device='cuda')[None,None].expand(B,-1,-1,-1), tf_to_crops, dsize=render_size, mode='nearest', align_corners=False)
     # Rendered mask: where depth > 0
     maskAs = (depth_rs > 0).float()
     # Compute IoU for each pose hypothesis
-    intersection = (maskAs * maskBs).sum(dim=(1, 2, 3))
-    union = ((maskAs + maskBs) > 0).float().sum(dim=(1, 2, 3))
+    intersection = (maskAs * maskBs_crop).sum(dim=(1, 2, 3))
+    union = ((maskAs + maskBs_crop) > 0).float().sum(dim=(1, 2, 3))
     mask_ious = intersection / (union + 1e-6)
     logging.info(f"Mask IoU - min: {mask_ious.min():.3f}, max: {mask_ious.max():.3f}, mean: {mask_ious.mean():.3f}")
   logging.info("warp done")
@@ -119,7 +132,7 @@ def make_crop_data_batch(render_size, ob_in_cams, mesh, rgb, depth, K, crop_rati
   Ks = torch.as_tensor(K, dtype=torch.float).reshape(1,3,3).expand(len(rgbAs),3,3)
   mesh_diameters = torch.ones((len(rgbAs)), dtype=torch.float, device='cuda')*mesh_diameter
 
-  pose_data = BatchPoseData(rgbAs=rgbAs, rgbBs=rgbBs, depthAs=depthAs, depthBs=depthBs, normalAs=normalAs, normalBs=normalBs, poseA=poseAs, xyz_mapAs=xyz_mapAs, tf_to_crops=tf_to_crops, Ks=Ks, mesh_diameters=mesh_diameters)
+  pose_data = BatchPoseData(rgbAs=rgbAs, rgbBs=rgbBs, depthAs=depthAs, depthBs=depthBs, normalAs=normalAs, normalBs=normalBs, maskBs=maskBs_crop, poseA=poseAs, xyz_mapAs=xyz_mapAs, tf_to_crops=tf_to_crops, Ks=Ks, mesh_diameters=mesh_diameters)
   pose_data = dataset.transform_batch(pose_data, H_ori=H, W_ori=W, bound=1)
 
   logging.info("pose batch data done")
@@ -240,7 +253,7 @@ class ScorePredictor:
       logging.info("get_vis...")
       canvas = []
       ids = scores.argsort(descending=True)
-      canvas = vis_batch_data_scores(pose_data, ids=ids, scores=scores)
+      canvas = vis_batch_data_scores(pose_data, ids=ids, scores=scores, mask_ious=mask_ious)
       return scores, canvas
 
     return scores, None
