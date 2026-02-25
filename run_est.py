@@ -520,16 +520,17 @@ class PoseEstimationPipeline:
         # Face winding order 통일 및 메시 유효성 검증
         mesh.process(validate=True)
 
-        # Unindex: 각 면이 고유 버텍스를 갖도록 분리
-        # → 공유 버텍스의 노멀 평균화 방지, 경계면 색상 그라데이션 제거
-        original_vc = np.array(mesh.visual.vertex_colors)  # (V, 4)
-        new_verts = mesh.vertices[mesh.faces.flatten()]
-        new_colors = original_vc[mesh.faces.flatten()]
-        new_faces = np.arange(len(mesh.faces) * 3).reshape(-1, 3)
-        mesh = trimesh.Trimesh(
-            vertices=new_verts, faces=new_faces, process=False
-        )
-        mesh.visual.vertex_colors = new_colors
+        # TextureVisuals → UV 텍스처 매핑 유지 (make_mesh_tensors에서 tex+uv 경로)
+        # ColorVisuals → Unindex로 노멀 평균화/색상 블리딩 방지
+        if not isinstance(mesh.visual, trimesh.visual.texture.TextureVisuals):
+            original_vc = np.array(mesh.visual.vertex_colors)  # (V, 4)
+            new_verts = mesh.vertices[mesh.faces.flatten()]
+            new_colors = original_vc[mesh.faces.flatten()]
+            new_faces = np.arange(len(mesh.faces) * 3).reshape(-1, 3)
+            mesh = trimesh.Trimesh(
+                vertices=new_verts, faces=new_faces, process=False
+            )
+            mesh.visual.vertex_colors = new_colors
 
         if self.config.mesh.scale != 1.0:
             mesh.apply_scale(self.config.mesh.scale)
@@ -708,7 +709,7 @@ def parse_args() -> argparse.Namespace:
     # Mesh 설정
     mesh = parser.add_argument_group('Mesh')
     mesh.add_argument('--mesh_file', type=str,
-        default=f'{code_dir}/vcb/ref_views/ob_000001/model/model_vc.ply')
+        default=f'{code_dir}/vcb/ref_views/ob_000001/model/model.obj')
     mesh.add_argument('--mesh_scale', type=float, default=0.01)
 
     # Scene 설정

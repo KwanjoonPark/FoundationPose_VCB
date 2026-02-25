@@ -208,7 +208,7 @@ def parse_args():
 
     # Mesh
     parser.add_argument('--mesh_file', type=str,
-        default=f'{code_dir}/vcb/ref_views/ob_000001/model/model_vc.ply')
+        default=f'{code_dir}/vcb/ref_views/ob_000001/model/model.obj')
     parser.add_argument('--mesh_scale', type=float, default=0.01)
 
     # Mask

@@ -337,15 +337,17 @@ class RealtimePoseEstimator:
         # Winding order 통일 + 유효성 검증
         mesh.process(validate=True)
 
-        # Unindex: 면별 고유 버텍스 → 노멀 평균화 방지
-        original_vc = np.array(mesh.visual.vertex_colors)
-        new_verts = mesh.vertices[mesh.faces.flatten()]
-        new_colors = original_vc[mesh.faces.flatten()]
-        new_faces = np.arange(len(mesh.faces) * 3).reshape(-1, 3)
-        mesh = trimesh.Trimesh(
-            vertices=new_verts, faces=new_faces, process=False
-        )
-        mesh.visual.vertex_colors = new_colors
+        # TextureVisuals → UV 텍스처 매핑 유지 (make_mesh_tensors에서 tex+uv 경로)
+        # ColorVisuals → Unindex로 노멀 평균화/색상 블리딩 방지
+        if not isinstance(mesh.visual, trimesh.visual.texture.TextureVisuals):
+            original_vc = np.array(mesh.visual.vertex_colors)
+            new_verts = mesh.vertices[mesh.faces.flatten()]
+            new_colors = original_vc[mesh.faces.flatten()]
+            new_faces = np.arange(len(mesh.faces) * 3).reshape(-1, 3)
+            mesh = trimesh.Trimesh(
+                vertices=new_verts, faces=new_faces, process=False
+            )
+            mesh.visual.vertex_colors = new_colors
 
         if self.args.mesh_scale != 1.0:
             mesh.apply_scale(self.args.mesh_scale)
@@ -776,7 +778,7 @@ def parse_args():
 
     # Mesh
     parser.add_argument('--mesh_file', type=str,
-        default=f'{code_dir}/vcb/ref_views/ob_000001/model/model_vc.ply')
+        default=f'{code_dir}/vcb/ref_views/ob_000001/model/model.obj')
     parser.add_argument('--mesh_scale', type=float, default=0.01)
 
     # Mask
