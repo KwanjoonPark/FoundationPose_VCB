@@ -485,7 +485,7 @@ class RealtimePoseEstimator:
                 pose = pose @ FLIP_X
         if self.args.symmetry and '180' in self.args.symmetry:
             pitch, _, _ = RotationUtils.to_euler(pose[:3, :3])
-            if pitch < 0:
+            if pitch > 0:
                 pose = pose @ FLIP_Z
         return pose
 
@@ -520,8 +520,8 @@ class RealtimePoseEstimator:
             trans = pose[:3, 3]
             quat = R.from_matrix(pose[:3, :3]).as_quat()  # [x, y, z, w]
             pitch, yaw, roll = RotationUtils.to_euler(pose[:3, :3])
-            pitch = RotationUtils.normalize_angle(-pitch)
-            yaw = RotationUtils.normalize_angle(-yaw)
+            pitch = RotationUtils.normalize_angle(pitch)
+            yaw = RotationUtils.normalize_angle(yaw)
             roll = RotationUtils.normalize_angle(roll)
 
             result["pose_6d"] = {
@@ -612,9 +612,8 @@ class RealtimePoseEstimator:
     def _make_vis(self, rgb, pose, mask):
         """Pose 오버레이 시각화 생성 (RGB → BGR 반환)."""
         vis = draw_posed_3d_box(self.K, img=rgb.copy(), ob_in_cam=pose, bbox=self.bbox)
-        pose_vis = pose @ FLIP_X
         vis = draw_xyz_axis(
-            vis, ob_in_cam=pose_vis, scale=max(self.extents),
+            vis, ob_in_cam=pose, scale=max(self.extents),
             K=self.K, thickness=3, transparency=0, is_input_rgb=True
         )
 
@@ -632,8 +631,8 @@ class RealtimePoseEstimator:
         vis_bgr = cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
         trans = pose[:3, 3]
         pitch, yaw, roll = RotationUtils.to_euler(pose[:3, :3])
-        pitch = RotationUtils.normalize_angle(-pitch)
-        yaw = RotationUtils.normalize_angle(-yaw)
+        pitch = RotationUtils.normalize_angle(pitch)
+        yaw = RotationUtils.normalize_angle(yaw)
         roll = RotationUtils.normalize_angle(roll)
 
         font, color = cv2.FONT_HERSHEY_SIMPLEX, (0, 255, 0)

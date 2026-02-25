@@ -87,10 +87,7 @@ if __name__=='__main__':
       vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=pose, bbox=bbox)
       # Use axis scale proportional to object size (reduced for better visibility)
       axis_scale = max(extents) * 1  # 1x the largest dimension
-      # Flip Y and Z axes for visualization (Rx_180)
-      Rx_180_vis = np.array([[1,0,0,0],[0,-1,0,0],[0,0,-1,0],[0,0,0,1]], dtype=np.float64)
-      pose_vis = pose @ Rx_180_vis
-      vis = draw_xyz_axis(vis, ob_in_cam=pose_vis, scale=axis_scale, K=reader.K, thickness=3, transparency=0, is_input_rgb=True)
+      vis = draw_xyz_axis(vis, ob_in_cam=pose, scale=axis_scale, K=reader.K, thickness=3, transparency=0, is_input_rgb=True)
 
       # Display 6DoF on top-left corner
       from scipy.spatial.transform import Rotation as R
