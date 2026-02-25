@@ -28,8 +28,6 @@ from typing import Optional, Tuple, List
 import cv2
 import imageio
 import numpy as np
-from scipy.spatial.transform import Rotation as Rot
-
 
 # =============================================================================
 # Configuration
@@ -316,18 +314,8 @@ class PoseCorrector:
 
     @classmethod
     def convert_for_saving(cls, pose: np.ndarray) -> np.ndarray:
-        """저장용으로 오일러 각도 정규화."""
-        pitch, yaw, roll = RotationUtils.to_euler(pose[:3, :3])
-
-        pitch_save = RotationUtils.normalize_angle(-pitch)
-        yaw_save = RotationUtils.normalize_angle(-yaw)
-        roll_save = RotationUtils.normalize_angle(roll)
-
-        rot_corrected = Rot.from_euler('xyz', [pitch_save, yaw_save, roll_save], degrees=True)
-        pose_save = pose.copy()
-        pose_save[:3, :3] = rot_corrected.as_matrix()
-
-        return pose_save
+        """저장용 pose 변환. ob_in_cam을 그대로 반환."""
+        return pose.copy()
 
 
 # =============================================================================
@@ -363,9 +351,8 @@ class PoseVisualizer:
         """좌표축 그리기."""
         from estimater import draw_xyz_axis
 
-        pose_vis = pose @ PoseCorrector.FLIP_X
         return draw_xyz_axis(
-            vis, ob_in_cam=pose_vis, scale=self.axis_scale, K=self.K,
+            vis, ob_in_cam=pose, scale=self.axis_scale, K=self.K,
             thickness=3, transparency=0, is_input_rgb=True
         )
 
@@ -385,8 +372,8 @@ class PoseVisualizer:
         """Pose 정보 텍스트 오버레이."""
         trans = pose[:3, 3]
         pitch, yaw, roll = RotationUtils.to_euler(pose[:3, :3])
-        pitch = RotationUtils.normalize_angle(-pitch)
-        yaw = RotationUtils.normalize_angle(-yaw)
+        pitch = RotationUtils.normalize_angle(pitch)
+        yaw = RotationUtils.normalize_angle(yaw)
         roll = RotationUtils.normalize_angle(roll)
 
         vis_bgr = cv2.cvtColor(vis, cv2.COLOR_RGB2BGR)
