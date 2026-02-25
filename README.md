@@ -155,7 +155,7 @@ roslaunch realsense2_camera rs_camera.launch  align_depth:=true  pointcloud:=fal
 
 ---
 
-## Test Dataset 으로 실행
+## Test Dataset 으로 6D 추정
 
 ### run_est.py — 오프라인 Pose 추정
 
@@ -176,7 +176,7 @@ python run_est.py --debug 2
 
 ---
 
-## Camera로 실시간 실행
+## Camera로 실시간 6D 추정
 
 ### pose_estimator.py — 인터랙티브 Pose 추정
 
@@ -291,6 +291,41 @@ VCB 핸들은 원통형이므로 `z180` 사용 (Z축 기준 180도 대칭).
 벽면 장착 물체용. 물체 Z축이 항상 카메라를 향하도록 보정합니다.
 - 가설 단계: 뒷면 후보 ~50% 제거 (`front_hemisphere_only`)
 - 추정 후: Z축 방향 재확인 + 필요 시 FLIP_X 적용
+
+---
+
+## 기타 기능
+
+### mask_generator.py — 마스크 시각화
+
+Mask R-CNN 또는 YOLO 세그멘테이션 결과를 시각화하고 저장합니다. Pose 추정 없이 마스크 품질만 확인할 때 유용합니다.
+
+```bash
+# 단일 이미지
+python mask_generator.py \
+    --model weights/2026-02-12-13-41-52/model_best.pth \
+    --model_type maskrcnn \
+    --image vcb/ref_views/test_scene/rgb/000000.png \
+    --conf 0.9
+
+# 이미지 디렉토리 일괄 처리
+python mask_generator.py \
+    --model weights/2026-02-12-13-41-52/model_best.pth \
+    --model_type maskrcnn \
+    --image_dir vcb/ref_views/test_scene/rgb/ \
+    --conf 0.9
+```
+
+결과는 `debug/masks/`에 저장됩니다. 마스크 영역은 빨간색 오버레이, 윤곽선은 노란색으로 표시됩니다.
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `--model` | (필수) | 모델 가중치 경로 |
+| `--model_type` | maskrcnn | 모델 타입 (maskrcnn/yolo) |
+| `--image` | None | 단일 이미지 경로 |
+| `--image_dir` | None | 이미지 디렉토리 경로 |
+| `--output_dir` | debug/masks | 결과 저장 경로 |
+| `--conf` | 0.9 | Confidence threshold |
 
 ---
 
