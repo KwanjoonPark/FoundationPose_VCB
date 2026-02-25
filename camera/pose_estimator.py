@@ -485,7 +485,7 @@ class RealtimePoseEstimator:
                 pose = pose @ FLIP_X
         if self.args.symmetry and '180' in self.args.symmetry:
             pitch, _, _ = RotationUtils.to_euler(pose[:3, :3])
-            if pitch < 0:
+            if pitch > 0:
                 pose = pose @ FLIP_Z
         return pose
 

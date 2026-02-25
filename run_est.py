@@ -305,10 +305,10 @@ class PoseCorrector:
         pitch/yaw 부호 모호성 보정.
 
         준대칭 객체의 경우 일관된 부호 규칙 적용.
-        pitch를 양수(+)로 통일.
+        pitch를 음수(-)로 통일.
         """
         pitch, _, _ = RotationUtils.to_euler(pose[:3, :3])
-        if pitch < 0:  # 음수면 플립하여 양수로 통일
+        if pitch > 0:  # 양수면 플립하여 음수로 통일
             pose = pose @ cls.FLIP_Z
         return pose
 
