@@ -247,11 +247,12 @@ pose_estimator, pose_streamer가 발행하는 토픽:
 
 PoseStamped 예시:
 
-<img width="490" height="323" alt="ros_topic_publish" src="https://github.com/user-attachments/assets/3edbdbbb-c08d-4380-a2e9-ced5e0e77e34" />
+<img width="490" height="323" alt="ros_topic_publish" src="https://github.com/user-attachments/assets/1c92c095-320e-4db3-93db-24032b47175c" />
+
 
 JSON 예시:
 
-<img width="821" height="177" alt="json" src="https://github.com/user-attachments/assets/28056c61-7f42-42d1-8b1b-a6a31b609e1f" />
+<img width="821" height="177" alt="json" src="https://github.com/user-attachments/assets/5322b484-09c6-4fa3-8c8a-56df5f826643" />
 
 ---
 
